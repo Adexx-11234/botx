@@ -1,6 +1,6 @@
 import { logger } from "../utils/logger.js";
 import { sessionManager } from "./session-manager.js";
-import { MessageHandler } from "./handlers/messages.js";
+import { MessageHandler } from "./handlers/message-handler.js";
 import { EventHandler } from "./handlers/events.js";
 import { AuthHandler } from "./handlers/auth.js";
 import { GroupHandler } from "./handlers/groups.js";
@@ -16,7 +16,7 @@ export class WhatsAppClient {
     this.authStates = new Map();
     this.isInitialized = false;
 
-    // Initialize handlers for message processing only
+    // Initialize handlers for message and event processing
     this.messageHandler = new MessageHandler(this);
     this.eventHandler = new EventHandler(this.sessionManager);
     this.authHandler = new AuthHandler(this);
@@ -106,46 +106,99 @@ export class WhatsAppClient {
 
   async sendText(sessionId, chatId, text) {
     try {
-      await this.sessionManager.sendMessage(sessionId, chatId, { text });
-      logger.info(`[WhatsApp] Text message sent to ${chatId}`);
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendText(client.sock, chatId, text);
     } catch (error) {
       logger.error(`[WhatsApp] Error sending text: ${error.message}`);
+      return { error: error.message };
     }
   }
 
   async sendImage(sessionId, chatId, image, caption = null) {
     try {
-      await this.sessionManager.sendMessage(sessionId, chatId, {
-        image,
-        caption,
-      });
-      logger.info(`[WhatsApp] Image sent to ${chatId}`);
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendImage(client.sock, chatId, image, caption);
     } catch (error) {
       logger.error(`[WhatsApp] Error sending image: ${error.message}`);
+      return { error: error.message };
     }
   }
 
   async sendVideo(sessionId, chatId, video, caption = null) {
     try {
-      await this.sessionManager.sendMessage(sessionId, chatId, {
-        video,
-        caption,
-      });
-      logger.info(`[WhatsApp] Video sent to ${chatId}`);
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendVideo(client.sock, chatId, video, caption);
     } catch (error) {
       logger.error(`[WhatsApp] Error sending video: ${error.message}`);
+      return { error: error.message };
     }
   }
 
   async sendAudio(sessionId, chatId, audio, options = {}) {
     try {
-      await this.sessionManager.sendMessage(sessionId, chatId, {
-        audio,
-        ptt: true,
-      });
-      logger.info(`[WhatsApp] Audio sent to ${chatId}`);
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendAudio(client.sock, chatId, audio, options);
     } catch (error) {
       logger.error(`[WhatsApp] Error sending audio: ${error.message}`);
+      return { error: error.message };
+    }
+  }
+
+  async sendDocument(sessionId, chatId, document, options = {}) {
+    try {
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendDocument(client.sock, chatId, document, options);
+    } catch (error) {
+      logger.error(`[WhatsApp] Error sending document: ${error.message}`);
+      return { error: error.message };
+    }
+  }
+
+  async sendSticker(sessionId, chatId, sticker, options = {}) {
+    try {
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendSticker(client.sock, chatId, sticker, options);
+    } catch (error) {
+      logger.error(`[WhatsApp] Error sending sticker: ${error.message}`);
+      return { error: error.message };
+    }
+  }
+
+  async sendButtonMessage(sessionId, chatId, text, buttons, options = {}) {
+    try {
+      const client = this.clients.get(sessionId);
+      if (!client || client.status !== "open") {
+        throw new Error(`Session ${sessionId} not connected`);
+      }
+
+      return await this.messageHandler.sendButtonMessage(client.sock, chatId, text, buttons, options);
+    } catch (error) {
+      logger.error(`[WhatsApp] Error sending button message: ${error.message}`);
+      return { error: error.message };
     }
   }
 
@@ -334,8 +387,23 @@ export class WhatsAppClient {
       totalSessions: this.sessionManager.getAllSessions().length,
       connectedSessions: this.getConnectedSessions().length,
       queueStats: messageSender.getQueueStats(),
+      messageHandlerReady: this.messageHandler?.isReady() || false,
       uptime: this.isInitialized ? Date.now() - this.initTime : 0,
     };
+  }
+
+  /**
+   * Get the MessageHandler instance for advanced operations
+   */
+  getMessageHandler() {
+    return this.messageHandler;
+  }
+
+  /**
+   * Check if MessageHandler is ready
+   */
+  isMessageHandlerReady() {
+    return this.messageHandler?.isReady() || false;
   }
 }
 
