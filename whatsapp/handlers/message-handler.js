@@ -1,10 +1,10 @@
 import { logger } from "../../utils/logger.js"
-import { MessageProcessor } from "./upsert.js"
+import { messageProcessor } from "./upsert.js"
 
 export class MessageHandler {
   constructor(client) {
     this.client = client
-    this.messageProcessor = new MessageProcessor()
+    this.messageProcessor = messageProcessor
     this.isInitialized = false
   }
 
