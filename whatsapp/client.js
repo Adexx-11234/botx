@@ -38,7 +38,17 @@ export class WhatsAppClient {
         fs.mkdirSync(sessionsDir, { recursive: true });
       }
 
-      await this.sessionManager.initializeExistingSessions();
+      await this.sessionManager.initializeExistingSessions({
+        onConnectionUpdate: async (update) => {
+          try {
+            if (update.status === "connected" && update.sessionId && update.sock) {
+              await this.handleConnectionOpen(update.sessionId, update.sock, null);
+            }
+          } catch (err) {
+            logger.error(`[WhatsApp] Error handling existing session open: ${err.message}`);
+          }
+        },
+      });
 
       this.isInitialized = true;
       this.initTime = Date.now();

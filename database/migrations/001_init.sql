@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS groups (
     id BIGSERIAL PRIMARY KEY,
     jid VARCHAR(255) NOT NULL,                   -- Group JID in format: numbers-numbers@g.us
-    session_id VARCHAR(255) NOT NULL,
     name VARCHAR(255),
     description TEXT,
     
@@ -93,7 +92,7 @@ CREATE TABLE IF NOT EXISTS groups (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-    UNIQUE(jid, session_id)
+    UNIQUE(jid)
 );
 
 -- Enhanced Warning system with better tracking
@@ -101,7 +100,6 @@ CREATE TABLE IF NOT EXISTS warnings (
     id BIGSERIAL PRIMARY KEY,
     user_jid VARCHAR(255) NOT NULL,              -- User JID who received warning
     group_jid VARCHAR(255) NOT NULL,             -- Group JID where warning occurred
-    session_id VARCHAR(255) NOT NULL,
     warning_type VARCHAR(50) NOT NULL,           -- 'antilink', 'anticall', 'antispam', etc.
     warning_count INTEGER DEFAULT 1,
     reason TEXT,                                 -- Optional reason for the warning
@@ -109,7 +107,7 @@ CREATE TABLE IF NOT EXISTS warnings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-    UNIQUE(user_jid, group_jid, session_id, warning_type)
+    UNIQUE(user_jid, group_jid, warning_type)
 );
 
 -- NEW: Violations table for detailed logging and analytics
@@ -117,7 +115,6 @@ CREATE TABLE IF NOT EXISTS violations (
     id BIGSERIAL PRIMARY KEY,
     user_jid VARCHAR(255) NOT NULL,              -- User who committed the violation
     group_jid VARCHAR(255) NOT NULL,             -- Group where violation occurred
-    session_id VARCHAR(255) NOT NULL,
     violation_type VARCHAR(50) NOT NULL,         -- 'antilink', 'antispam', etc.
     message_content TEXT,                        -- Original message content (truncated)
     detected_content JSONB,                      -- What was detected (links, mentions, etc.)
@@ -128,8 +125,8 @@ CREATE TABLE IF NOT EXISTS violations (
     
     -- Foreign key relationships
     CONSTRAINT fk_violation_warning 
-        FOREIGN KEY (user_jid, group_jid, session_id, violation_type) 
-        REFERENCES warnings(user_jid, group_jid, session_id, warning_type)
+        FOREIGN KEY (user_jid, group_jid, violation_type) 
+        REFERENCES warnings(user_jid, group_jid, warning_type)
         ON DELETE CASCADE
 );
 
@@ -150,7 +147,6 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS group_analytics (
     id BIGSERIAL PRIMARY KEY,
     group_jid VARCHAR(255) NOT NULL,
-    session_id VARCHAR(255) NOT NULL,
     date DATE NOT NULL,
     
     -- Message statistics
@@ -169,7 +165,7 @@ CREATE TABLE IF NOT EXISTS group_analytics (
     kicked_users INTEGER DEFAULT 0,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(group_jid, session_id, date)
+    UNIQUE(group_jid, date)
 );
 
 -- Comprehensive indexes for performance
@@ -181,7 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session_from ON messages(session_id, from_jid);
 
 -- Group setting indexes
-CREATE INDEX IF NOT EXISTS idx_groups_jid_session ON groups(jid, session_id);
+CREATE INDEX IF NOT EXISTS idx_groups_jid ON groups(jid);
 CREATE INDEX IF NOT EXISTS idx_groups_antilink ON groups(antilink_enabled) WHERE antilink_enabled = true;
 CREATE INDEX IF NOT EXISTS idx_groups_antispam ON groups(antispam_enabled) WHERE antispam_enabled = true;
 CREATE INDEX IF NOT EXISTS idx_groups_welcome ON groups(welcome_enabled) WHERE welcome_enabled = true;
@@ -189,7 +185,6 @@ CREATE INDEX IF NOT EXISTS idx_groups_goodbye ON groups(goodbye_enabled) WHERE g
 
 -- Warning system indexes
 CREATE INDEX IF NOT EXISTS idx_warnings_user_group ON warnings(user_jid, group_jid);
-CREATE INDEX IF NOT EXISTS idx_warnings_group_session ON warnings(group_jid, session_id);
 CREATE INDEX IF NOT EXISTS idx_warnings_type ON warnings(warning_type);
 CREATE INDEX IF NOT EXISTS idx_warnings_count ON warnings(warning_count);
 CREATE INDEX IF NOT EXISTS idx_warnings_last_warning ON warnings(last_warning_at DESC);
@@ -198,7 +193,6 @@ CREATE INDEX IF NOT EXISTS idx_warnings_last_warning ON warnings(last_warning_at
 CREATE INDEX IF NOT EXISTS idx_violations_user_group ON violations(user_jid, group_jid);
 CREATE INDEX IF NOT EXISTS idx_violations_type ON violations(violation_type);
 CREATE INDEX IF NOT EXISTS idx_violations_date ON violations(violated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_violations_session ON violations(session_id);
 
 -- Session and user indexes
 CREATE INDEX IF NOT EXISTS idx_sessions_telegram_id ON sessions(telegram_id);
@@ -208,7 +202,6 @@ CREATE INDEX IF NOT EXISTS idx_users_admin ON users(is_admin) WHERE is_admin = t
 
 -- Analytics indexes
 CREATE INDEX IF NOT EXISTS idx_analytics_group_date ON group_analytics(group_jid, date DESC);
-CREATE INDEX IF NOT EXISTS idx_analytics_session_date ON group_analytics(session_id, date DESC);
 
 -- Triggers for updating timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()

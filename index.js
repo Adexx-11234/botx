@@ -100,12 +100,15 @@ async function initializePlatform() {
     logger.error("WhatsApp client initialization error (continuing)", error);
   }
 
-  // Start cleanup interval
-  setInterval(() => {
+  // Start maintenance interval: only clean up inactive sessions
+  setInterval(async () => {
     try {
-      sessionManager.cleanup();
+      const cleaned = await sessionManager.cleanupInactiveSessions();
+      if (cleaned > 0) {
+        logger.info("Inactive sessions cleaned", { count: cleaned });
+      }
     } catch (error) {
-      logger.error("Session cleanup error", error);
+      logger.error("Maintenance cleanup error", error);
     }
   }, 300000); // Every 5 minutes
 

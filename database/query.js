@@ -67,11 +67,11 @@ export const GroupQueries = {
   /**
    * Get group settings
    */
-  async getSettings(groupJid, sessionId) {
+  async getSettings(groupJid) {
     const result = await queryManager.execute(`
       SELECT * FROM groups 
-      WHERE jid = $1 AND session_id = $2
-    `, [groupJid, sessionId])
+      WHERE jid = $1
+    `, [groupJid])
 
     return result.rows[0] || null
   },
@@ -79,7 +79,7 @@ export const GroupQueries = {
   /**
    * Create or update group settings
    */
-  async upsertSettings(groupJid, sessionId, settings = {}) {
+  async upsertSettings(groupJid, settings = {}) {
     const setClause = Object.keys(settings)
       .map((key, index) => `${key} = $${index + 3}`)
       .join(', ')
@@ -87,19 +87,19 @@ export const GroupQueries = {
     const values = Object.values(settings)
 
     const query = `
-      INSERT INTO groups (jid, session_id, ${Object.keys(settings).join(', ')}, updated_at)
-      VALUES ($1, $2, ${Object.keys(settings).map((_, i) => `$${i + 3}`).join(', ')}, CURRENT_TIMESTAMP)
-      ON CONFLICT (jid, session_id)
+      INSERT INTO groups (jid, ${Object.keys(settings).join(', ')}, updated_at)
+      VALUES ($1, ${Object.keys(settings).map((_, i) => `$${i + 2}`).join(', ')}, CURRENT_TIMESTAMP)
+      ON CONFLICT (jid)
       DO UPDATE SET 
         ${setClause},
         updated_at = CURRENT_TIMESTAMP
       RETURNING *
     `
 
-    const result = await queryManager.execute(query, [groupJid, sessionId, ...values])
+    const result = await queryManager.execute(query, [groupJid, ...values])
     
     // Clear cache
-    queryManager.clearCache(`group_settings_${groupJid}_${sessionId}`)
+    queryManager.clearCache(`group_settings_${groupJid}`)
     
     return result.rows[0]
   },
@@ -429,34 +429,34 @@ export const AnalyticsQueries = {
   /**
    * Update daily group analytics
    */
-  async updateGroupAnalytics(groupJid, sessionId, updates) {
+  async updateGroupAnalytics(groupJid, updates) {
     const setClause = Object.keys(updates)
-      .map((key, index) => `${key} = ${key} + $${index + 4}`)
+      .map((key, index) => `${key} = ${key} + $${index + 3}`)
       .join(', ')
     
     const values = Object.values(updates)
 
     await queryManager.execute(`
       INSERT INTO group_analytics (
-        group_jid, session_id, date, ${Object.keys(updates).join(', ')}
+        group_jid, date, ${Object.keys(updates).join(', ')}
       )
-      VALUES ($1, $2, CURRENT_DATE, ${Object.keys(updates).map((_, i) => `$${i + 4}`).join(', ')})
-      ON CONFLICT (group_jid, session_id, date)
+      VALUES ($1, CURRENT_DATE, ${Object.keys(updates).map((_, i) => `$${i + 3}`).join(', ')})
+      ON CONFLICT (group_jid, date)
       DO UPDATE SET 
         ${setClause}
-    `, [groupJid, sessionId, new Date().toISOString().split('T')[0], ...values])
+    `, [groupJid, new Date().toISOString().split('T')[0], ...values])
   },
 
   /**
    * Get group analytics for date range
    */
-  async getGroupAnalytics(groupJid, sessionId, days = 30) {
+  async getGroupAnalytics(groupJid, days = 30) {
     const result = await queryManager.execute(`
       SELECT * FROM group_analytics
-      WHERE group_jid = $1 AND session_id = $2
+      WHERE group_jid = $1
         AND date > CURRENT_DATE - INTERVAL '${days} days'
       ORDER BY date DESC
-    `, [groupJid, sessionId])
+    `, [groupJid])
 
     return result.rows
   }
