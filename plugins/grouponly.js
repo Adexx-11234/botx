@@ -1,5 +1,5 @@
-import { logger } from "../../utils/logger.js"
-import { pool } from "../../config/database.js"
+import { logger } from "../utils/logger.js"
+import { pool } from "../config/database.js"
 
 export default {
   name: "Group Only",

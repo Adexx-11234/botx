@@ -1,4 +1,4 @@
-import { createComponentLogger } from "../../utils/logger.js"
+import { createComponentLogger } from "../utils/logger.js"
 const log = createComponentLogger("PLUGIN")
 
 export default {

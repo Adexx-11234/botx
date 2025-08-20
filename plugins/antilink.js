@@ -1,8 +1,8 @@
 // plugins/group/anti-link.js - Anti-Link Plugin (Updated)
 
-import { logger } from "../../utils/logger.js"
-import { GroupQueries, WarningQueries, ViolationQueries } from "../../database/query.js"
-import AdminChecker from "../../whatsapp/utils/admin-checker.js"
+import { logger } from "../utils/logger.js"
+import { GroupQueries, WarningQueries, ViolationQueries } from "../database/query.js"
+import AdminChecker from "../whatsapp/utils/admin-checker.js"
 
 export default {
   name: "Anti-Link",
