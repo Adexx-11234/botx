@@ -9,7 +9,6 @@ import {
   import path from "path";
   import { logger } from "../utils/logger.js";
   import { baileysConfig } from "../config/baileys.js";
-  import { GroupHandler } from "./handlers/groups.js";
   import {
     handlePairing,
     markPairingRestartHandled,
@@ -37,9 +36,6 @@ import {
       // Start periodic cleanup
       this.startPeriodicCleanup();
   
-      // Handlers
-      this.groupHandler = new GroupHandler();
-
       logger.info("[SessionManager] WhatsApp Session Manager initialized");
     }
   
@@ -246,10 +242,6 @@ import {
           // Update last activity
           sessionData.lastActivity = Date.now();
   
-          logger.info(
-            `[SessionManager] messages.upsert for ${sessionId}: type=${messageUpdate.type} count=${messageUpdate.messages?.length || 0}`
-          );
-
           const { handleMessagesUpsert } = await import("./handlers/upsert.js");
           await handleMessagesUpsert(sessionId, messageUpdate, sock);
         } catch (error) {
@@ -259,37 +251,6 @@ import {
         }
       });
   
-      // Group participants (join/leave/promote/demote)
-      sock.ev.on("group-participants.update", async (update) => {
-        try {
-          sessionData.lastActivity = Date.now();
-
-          const groupJid = update.id || update.jid;
-          const participants = update.participants || [];
-          const action = update.action;
-
-          if (!groupJid || participants.length === 0 || !action) return;
-
-          logger.info(
-            `[SessionManager] group-participants.update for ${sessionId}: ${action} -> ${participants.join(",")}`
-          );
-
-          if (action === "add") {
-            await this.groupHandler.handleGroupJoin(sock, groupJid, participants);
-          } else if (action === "remove") {
-            await this.groupHandler.handleGroupLeave(sock, groupJid, participants);
-          } else if (action === "promote") {
-            await this.groupHandler.handleGroupPromote(sock, groupJid, participants, null);
-          } else if (action === "demote") {
-            await this.groupHandler.handleGroupDemote(sock, groupJid, participants, null);
-          }
-        } catch (error) {
-          logger.error(
-            `[SessionManager] Error handling group-participants.update for ${sessionId}: ${error.message}`
-          );
-        }
-      });
-
       // Groups update handler
       sock.ev.on("groups.update", async (updates) => {
         try {

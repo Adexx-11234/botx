@@ -320,14 +320,12 @@ class MessageProcessor {
           `[MessageProcessor] Admin participants count: ${adminParticipants.length}`
         );
 
-        // Multiple admin check methods
+        // Multiple admin check methods - FIXED: use jid consistently
         const method1 = admins.includes(senderJid);
         const method2 = admins.includes(rawSender);
         const method3 = adminParticipants.some(
           (p) =>
-            this.normalizeJid(p.jid || p.jid || "") === senderJid ||
-            p.jid === rawSender ||
-            p.jid === rawSender
+            this.normalizeJid(p.jid || "") === senderJid || p.jid === rawSender
         );
 
         logger.info(
@@ -343,22 +341,19 @@ class MessageProcessor {
         // Use the most permissive result
         context.senderIsAdmin = method1 || method2 || method3;
 
-        // Check if bot is admin
+        // Check if bot is admin - FIXED: use jid consistently
         context.botIsAdmin = participants.some((p) => {
-          const participantId = this.normalizeJid(p.jid || "");
           const participantJid = this.normalizeJid(p.jid || "");
-
-          const idMatch = participantId === botNumber;
-          const jidMatch = participantJid === botNumber;
+          const jidMatch = participantJid === botNumber || p.jid === botNumber;
           const isAdmin = p.admin === "admin" || p.admin === "superadmin";
 
-          if (idMatch || jidMatch) {
+          if (jidMatch) {
             logger.info(
-              `[MessageProcessor] Bot match found: id=${p.id}, admin=${p.admin}`
+              `[MessageProcessor] Bot match found: jid=${p.jid}, admin=${p.admin}`
             );
           }
 
-          return (idMatch || jidMatch) && isAdmin;
+          return jidMatch && isAdmin;
         });
 
         logger.info(
@@ -403,10 +398,10 @@ class MessageProcessor {
 
     for (let participant of participants) {
       if (participant.admin === "superadmin" || participant.admin === "admin") {
-        // Try both id and jid fields, normalize them
-        const adminId = participant.jid;
-        if (adminId) {
-          admins.push(this.normalizeJid(adminId));
+        // FIXED: Use jid instead of id
+        const adminJid = participant.jid;
+        if (adminJid) {
+          admins.push(this.normalizeJid(adminJid));
         }
       }
     }
@@ -516,7 +511,9 @@ export async function handleMessagesUpsert(sessionId, messageUpdate, sock) {
   try {
     const prefix = process.env.COMMAND_PREFIX || ".";
     logger.info(
-      `[Upsert] handleMessagesUpsert: session=${sessionId} type=${messageUpdate.type} messages=${messageUpdate.messages?.length || 0}`
+      `[Upsert] handleMessagesUpsert: session=${sessionId} type=${
+        messageUpdate.type
+      } messages=${messageUpdate.messages?.length || 0}`
     );
 
     for (const message of messageUpdate.messages) {

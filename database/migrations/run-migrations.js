@@ -10,19 +10,26 @@ async function runMigrations() {
   try {
     console.log("🔄 Starting database migrations...")
 
-    const migrationFile = path.join(__dirname, "001_init.sql")
-    const migrationSQL = fs.readFileSync(migrationFile, "utf8")
+    // Read all .sql files in this directory and run them in filename order
+    const files = fs
+      .readdirSync(__dirname)
+      .filter((f) => f.endsWith(".sql"))
+      .sort((a, b) => a.localeCompare(b))
 
-    await pool.query(migrationSQL)
+    if (files.length === 0) {
+      console.log("ℹ️ No migration files found")
+      return
+    }
 
-    console.log("✅ Database migrations completed successfully!")
-    console.log("📊 Tables created:")
-    console.log("   - users (Telegram authentication)")
-    console.log("   - sessions (WhatsApp connections)")
-    console.log("   - messages (with proper Baileys JID format)")
-    console.log("   - groups (settings and anti-commands)")
-    console.log("   - warnings (4-warning system)")
-    console.log("   - settings (user preferences)")
+    for (const file of files) {
+      const fullPath = path.join(__dirname, file)
+      const sql = fs.readFileSync(fullPath, "utf8")
+      console.log(`➡️  Applying migration: ${file}`)
+      await pool.query(sql)
+      console.log(`✅ Applied: ${file}`)
+    }
+
+    console.log("✅ All migrations completed successfully!")
   } catch (error) {
     console.error("❌ Migration failed:", error.message)
     process.exit(1)
