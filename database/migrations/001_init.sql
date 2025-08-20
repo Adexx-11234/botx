@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS groups (
     autowelcome_enabled BOOLEAN DEFAULT FALSE,
     autokick_enabled BOOLEAN DEFAULT FALSE,
     
+    -- Group event settings
+    welcome_enabled BOOLEAN DEFAULT FALSE,       -- Enable welcome messages for new members
+    goodbye_enabled BOOLEAN DEFAULT FALSE,      -- Enable goodbye messages for leaving members
+    
     -- Warning limits (configurable per group)
     warning_limit INTEGER DEFAULT 4,
     
@@ -180,6 +184,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_from ON messages(session_id, fro
 CREATE INDEX IF NOT EXISTS idx_groups_jid_session ON groups(jid, session_id);
 CREATE INDEX IF NOT EXISTS idx_groups_antilink ON groups(antilink_enabled) WHERE antilink_enabled = true;
 CREATE INDEX IF NOT EXISTS idx_groups_antispam ON groups(antispam_enabled) WHERE antispam_enabled = true;
+CREATE INDEX IF NOT EXISTS idx_groups_welcome ON groups(welcome_enabled) WHERE welcome_enabled = true;
+CREATE INDEX IF NOT EXISTS idx_groups_goodbye ON groups(goodbye_enabled) WHERE goodbye_enabled = true;
 
 -- Warning system indexes
 CREATE INDEX IF NOT EXISTS idx_warnings_user_group ON warnings(user_jid, group_jid);
@@ -249,3 +255,23 @@ BEGIN
     RETURN deleted_count;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ==========================================
+-- DATABASE SCHEMA DOCUMENTATION
+-- ==========================================
+
+-- Groups Table - Group Event Features
+-- The groups table now includes welcome and goodbye message functionality:
+-- 
+-- welcome_enabled: BOOLEAN DEFAULT FALSE
+--   - Controls whether welcome messages are sent when new members join
+--   - Managed through the groupevents plugin (.welcome on/off)
+--   - Each group can have different settings
+--
+-- goodbye_enabled: BOOLEAN DEFAULT FALSE  
+--   - Controls whether goodbye messages are sent when members leave
+--   - Managed through the groupevents plugin (.goodbye on/off)
+--   - Each group can have different settings
+--
+-- These features are automatically integrated with the group handler
+-- and require no environment variable configuration.
