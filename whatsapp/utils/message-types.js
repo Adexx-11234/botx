@@ -414,6 +414,5 @@ export const KNOWN_MESSAGE_TYPES = [
 
 export {
   getMessageInfo,
-  shouldBlockMessage,
-  KNOWN_MESSAGE_TYPES,
+  shouldBlockMessage
 }
