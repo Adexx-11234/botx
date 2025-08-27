@@ -1,5 +1,10 @@
-import { jidDecode, areJidsSameUser } from "@whiskeysockets/baileys"
-import { logger } from "../../utils/logger.js"
+// WhatsApp helper utilities
+import {
+  jidDecode,
+  areJidsSameUser,
+  downloadContentFromMessage as baileyDownloadContent,
+  getContentType as baileysGetContentType,
+} from "@whiskeysockets/baileys"
 
 export class WhatsAppHelpers {
   // JID utilities
@@ -37,6 +42,7 @@ export class WhatsAppHelpers {
 
   static getPhoneNumber(jid) {
     if (!jid) return null
+
     const decoded = jidDecode(jid)
     return decoded?.user || null
   }
@@ -59,15 +65,15 @@ export class WhatsAppHelpers {
     }
 
     if (message.imageMessage?.caption) {
-      return message.imageMessage.caption
+      return message.imageMessage.caption || null
     }
 
     if (message.videoMessage?.caption) {
-      return message.videoMessage.caption
+      return message.videoMessage.caption || null
     }
 
     if (message.documentMessage?.caption) {
-      return message.documentMessage.caption
+      return message.documentMessage.caption || null
     }
 
     return null
@@ -158,22 +164,61 @@ export class WhatsAppHelpers {
 
   static formatTimestamp(timestamp) {
     if (!timestamp) return "Unknown"
-    
+
     const date = new Date(timestamp * 1000)
     return date.toLocaleString()
   }
 
   static getRelativeTime(timestamp) {
     if (!timestamp) return "Unknown"
-    
+
     const now = Math.floor(Date.now() / 1000)
     const diff = now - timestamp
-    
+
     if (diff < 60) return `${diff} seconds ago`
     if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`
     if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`
     if (diff < 2592000) return `${Math.floor(diff / 86400)} days ago`
-    
+
     return `${Math.floor(diff / 2592000)} months ago`
   }
 }
+
+export function normalizeJid(jid) {
+  if (!jid) return null
+
+  try {
+    const decoded = jidDecode(jid)
+    if (decoded?.user) {
+      // Convert @lid to proper @s.whatsapp.net format
+      if (jid.includes("@lid")) {
+        return `${decoded.user}@s.whatsapp.net`
+      }
+      // Handle group JIDs
+      if (decoded.server === "g.us") {
+        return `${decoded.user}@g.us`
+      }
+      // Handle regular user JIDs
+      if (decoded.server === "s.whatsapp.net") {
+        return `${decoded.user}@s.whatsapp.net`
+      }
+    }
+  } catch (error) {
+    // Fallback to original formatJid if jidDecode fails
+    console.warn(`[JID] Failed to decode JID ${jid}:`, error.message)
+  }
+
+  // Fallback to original logic
+  return WhatsAppHelpers.formatJid(jid)
+}
+
+export const formatJid = WhatsAppHelpers.formatJid.bind(WhatsAppHelpers)
+export const isGroupJid = WhatsAppHelpers.isGroupJid.bind(WhatsAppHelpers)
+export const isUserJid = WhatsAppHelpers.isUserJid.bind(WhatsAppHelpers)
+export const getPhoneNumber = WhatsAppHelpers.getPhoneNumber.bind(WhatsAppHelpers)
+export const sameUser = WhatsAppHelpers.sameUser.bind(WhatsAppHelpers)
+export const extractMessageText = WhatsAppHelpers.extractMessageText.bind(WhatsAppHelpers)
+export const getMessageType = WhatsAppHelpers.getMessageType.bind(WhatsAppHelpers)
+
+export const downloadContentFromMessage = baileyDownloadContent
+export const getContentType = baileysGetContentType

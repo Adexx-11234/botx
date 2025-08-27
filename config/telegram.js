@@ -1,3 +1,4 @@
+// Telegram bot configuration and settings
 export const telegramConfig = {
   token: process.env.TELEGRAM_BOT_TOKEN,
   polling: {
@@ -30,4 +31,6 @@ export const adminConfig = {
   sessionTimeout: 30 * 60 * 1000, // 30 minutes
   maxLoginAttempts: 3,
   lockoutDuration: 15 * 60 * 1000, // 15 minutes
+  defaultAdminId: process.env.DEFAULT_ADMIN_TELEGRAM_ID || "1774315698",
+  adminPassword: process.env.ADMIN_PASSWORD || "admin123",
 }

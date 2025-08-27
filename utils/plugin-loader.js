@@ -1,344 +1,601 @@
-// Plugin System & Core Commands
-
+// Plugin System & Core Commands with Auto-Reload - OPTIMIZED VERSION
 import fs from "fs/promises"
+import fsr from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
-import { createComponentLogger } from "./logger.js"
+import chalk from "chalk"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+// Simplified logging
+const log = {
+  info: (msg) => console.log(chalk.blue('[INFO]'), msg),
+  warn: (msg) => console.log(chalk.yellow('[WARN]'), msg),
+  error: (msg, err) => console.log(chalk.red('[ERROR]'), msg, err?.message || ''),
+  debug: (msg) => process.env.DEBUG && console.log(chalk.gray('[DEBUG]'), msg)
+}
 
 class PluginLoader {
   constructor() {
     this.plugins = new Map()
     this.commands = new Map()
-    this.antiPlugins = new Map()  // Separate map for anti-plugins
-    this.middleware = []
+    this.antiPlugins = new Map()
+    this.contactStore = new Map()
+    this.watchers = new Map()
+    this.reloadTimeouts = new Map()
     this.isInitialized = false
     this.pluginDir = path.join(__dirname, "..", "plugins")
-    this.log = createComponentLogger("PLUGIN")
-    this.log.info("Plugin loader initialized")
+    this.autoReloadEnabled = process.env.PLUGIN_AUTO_RELOAD !== "false"
+    this.reloadDebounceMs = Number.parseInt(process.env.PLUGIN_RELOAD_DEBOUNCE) || 1000
+
+    log.info(`Plugin loader initialized (Auto-reload: ${this.autoReloadEnabled ? 'ON' : 'OFF'})`)
+  }
+
+  validatePlugin(plugin, pluginName) {
+    if (!plugin || typeof plugin !== "object") return false
+    if (!plugin.name || typeof plugin.name !== "string") return false
+    if (typeof plugin.execute !== "function") return false
+    
+    if (plugin.permissions && Array.isArray(plugin.permissions)) {
+      const validPermissions = ["owner", "admin", "group_admin", "user"]
+      const hasInvalidPermission = plugin.permissions.some(p => !validPermissions.includes(p.toLowerCase()))
+      if (hasInvalidPermission) {
+        log.warn(`Plugin ${pluginName} has invalid permissions: ${JSON.stringify(plugin.permissions)}`)
+      }
+    }
+    
+    return true
   }
 
   async loadPlugins() {
     try {
-      this.log.info("Starting plugin discovery and loading...")
-
-      // Load plugins from main directory
-      await this.loadMainPlugins()
-
-      // Load plugins from category directories (group, private, both)
-      await this.loadPluginCategory("group")
-      await this.loadPluginCategory("private")
-      await this.loadPluginCategory("both")
-
-      // Register anti-plugins automatically
-      await this.registerAntiPlugins()
+      log.info("Loading plugins...")
+      await this.clearWatchers()
+      await this.loadAllPlugins()
+      
+      if (this.autoReloadEnabled) {
+        await this.setupFileWatchers()
+      }
 
       this.isInitialized = true
-      this.log.info(`Plugin loading complete. Loaded ${this.plugins.size} plugins, ${this.commands.size} commands, ${this.antiPlugins.size} anti-plugins`)
-
+      log.info(`Loaded ${this.plugins.size} plugins, ${this.commands.size} commands`)
+      
+      // Schedule maintenance
+      setInterval(() => this.performMaintenance(), 1800000)
+      
       return Array.from(this.plugins.values())
     } catch (error) {
-      this.log.error("Error loading plugins:", error)
+      log.error("Error loading plugins:", error)
       throw error
     }
   }
 
-  async loadMainPlugins() {
+  async loadAllPlugins() {
     try {
-      const files = await fs.readdir(this.pluginDir)
-
-      for (const file of files) {
-        if (file.endsWith(".js")) {
-          await this.loadPlugin(this.pluginDir, file, "main")
-        }
-      }
+      await this.loadPluginsFromDirectory(this.pluginDir)
+      await this.registerAntiPlugins()
     } catch (error) {
-      this.log.error(`Error loading main plugins:`, error)
+      log.error("Error loading all plugins:", error)
     }
   }
 
-  async loadPluginCategory(category) {
-    const categoryPath = path.join(this.pluginDir, category)
+  async registerAntiPlugins() {
+    for (const [pluginId, plugin] of this.plugins.entries()) {
+      if (plugin && typeof plugin.processMessage === "function") {
+        this.antiPlugins.set(pluginId, plugin)
+      }
+    }
+  }
 
+  async loadPluginsFromDirectory(dirPath, category = "main") {
     try {
-      const files = await fs.readdir(categoryPath)
+      const items = await fs.readdir(dirPath, { withFileTypes: true })
 
-      for (const file of files) {
-        if (file.endsWith(".js")) {
-          await this.loadPlugin(categoryPath, file, category)
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item.name)
+
+        if (item.isDirectory()) {
+          const subCategory = category === "main" ? item.name : `${category}/${item.name}`
+          await this.loadPluginsFromDirectory(itemPath, subCategory)
+        } else if (item.name.endsWith(".js")) {
+          await this.loadPlugin(dirPath, item.name, category)
         }
       }
     } catch (error) {
       if (error.code !== "ENOENT") {
-        this.log.error(`Error loading ${category} plugins:`, error)
+        log.error(`Error loading plugins from ${dirPath}:`, error)
       }
     }
   }
 
+  async extractPushName(sock, m) {
+    try {
+      let pushName = m.pushName || m.message?.pushName || m.key?.notify
+      
+      if (!pushName && this.contactStore.has(m.sender)) {
+        const cached = this.contactStore.get(m.sender)
+        if (cached.pushName && (Date.now() - cached.timestamp) < 300000) {
+          pushName = cached.pushName
+        }
+      }
+      
+      if (!pushName && sock.store?.contacts?.[m.sender]) {
+        const contact = sock.store.contacts[m.sender]
+        pushName = contact.notify || contact.name || contact.pushName
+      }
+
+      pushName = pushName || this.generateFallbackName(m.sender)
+
+      this.contactStore.set(m.sender, {
+        pushName: pushName,
+        timestamp: Date.now()
+      })
+
+      return pushName
+    } catch (error) {
+      return this.generateFallbackName(m.sender)
+    }
+  }
+
+  generateFallbackName(jid) {
+    if (!jid) return "Unknown"
+    const phoneNumber = jid.split('@')[0]
+    return phoneNumber && phoneNumber.length > 4 ? `User ${phoneNumber.slice(-4)}` : "Unknown User"
+  }
+
+  performMaintenance() {
+    const now = Date.now()
+    const maxAge = 1800000 // 30 minutes
+
+    for (const [jid, data] of this.contactStore.entries()) {
+      if (now - data.timestamp > maxAge) {
+        this.contactStore.delete(jid)
+      }
+    }
+  }
+    
   async loadPlugin(pluginPath, filename, category) {
     try {
       const fullPath = path.join(pluginPath, filename)
       const pluginName = path.basename(filename, ".js")
-
-      // Clear module cache for hot reloading in development
       const moduleUrl = `file://${fullPath}?t=${Date.now()}`
-      
-      // Dynamic import for ES modules
+
       const pluginModule = await import(moduleUrl)
       const plugin = pluginModule.default || pluginModule
 
-      // Validate plugin structure
       if (!this.validatePlugin(plugin, pluginName)) {
+        log.warn(`Skipping invalid plugin: ${filename}`)
         return
       }
 
-      // Register plugin
       const pluginId = `${category}:${pluginName}`
+      
+      // Normalize commands
+      const normalizedCommands = []
+      
+      if (Array.isArray(plugin.commands)) {
+        for (const c of plugin.commands) {
+          if (typeof c === "string") normalizedCommands.push(c.toLowerCase())
+        }
+      }
+      if (Array.isArray(plugin.aliases)) {
+        for (const a of plugin.aliases) {
+          if (typeof a === "string") normalizedCommands.push(a.toLowerCase())
+        }
+      }
+      
+      if (normalizedCommands.length === 0 && typeof plugin.name === "string") {
+        normalizedCommands.push(plugin.name.toLowerCase())
+      }
+
+      if (typeof pluginName === "string" && !normalizedCommands.includes(pluginName.toLowerCase())) {
+        normalizedCommands.push(pluginName.toLowerCase())
+      }
+      
+      const uniqueCommands = [...new Set(normalizedCommands)]
+
       const pluginData = {
         ...plugin,
         id: pluginId,
         category,
         filename,
-        loadedAt: new Date().toISOString()
+        fullPath,
+        pluginPath,
+        loadedAt: new Date().toISOString(),
+        commands: uniqueCommands,
       }
 
       this.plugins.set(pluginId, pluginData)
 
-      // Register commands
-      if (plugin.commands && Array.isArray(plugin.commands)) {
-        for (const command of plugin.commands) {
-          this.commands.set(command, pluginId)
+      for (const command of uniqueCommands) {
+        this.commands.set(command, pluginId)
+      }
+
+      if (typeof plugin.processMessage === "function") {
+        this.antiPlugins.set(pluginId, pluginData)
+      }
+
+      log.debug(`Loaded plugin: ${pluginId} (${uniqueCommands.join(", ") || "none"})`)
+    } catch (error) {
+      log.error(`Error loading plugin ${filename}:`, error)
+    }
+  }
+
+  async setupFileWatchers() {
+    try {
+      await this.setupDirectoryWatchersRecursively(this.pluginDir, "main")
+    } catch (error) {
+      log.error("Error setting up file watchers:", error)
+    }
+  }
+
+  async setupDirectoryWatchersRecursively(dirPath, category) {
+    try {
+      await this.setupDirectoryWatcher(dirPath, category)
+
+      const items = await fs.readdir(dirPath, { withFileTypes: true })
+      for (const item of items) {
+        if (item.isDirectory()) {
+          const subDirPath = path.join(dirPath, item.name)
+          const subCategory = category === "main" ? item.name : `${category}/${item.name}`
+          await this.setupDirectoryWatchersRecursively(subDirPath, subCategory)
+        }
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        log.error(`Error setting up watchers for ${dirPath}:`, error)
+      }
+    }
+  }
+
+  async setupDirectoryWatcher(dirPath, category) {
+    try {
+      const watcher = fsr.watch(dirPath, { persistent: false }, (eventType, filename) => {
+        if (filename && filename.endsWith(".js")) {
+          this.handleFileChange(dirPath, filename, category, eventType)
+        }
+      })
+
+      this.watchers.set(dirPath, watcher)
+    } catch (error) {
+      log.error(`Error setting up watcher for ${dirPath}:`, error)
+    }
+  }
+
+  async handleFileChange(dirPath, filename, category, eventType) {
+    try {
+      const key = path.join(dirPath, filename)
+      const existing = this.reloadTimeouts.get(key)
+      if (existing) clearTimeout(existing)
+
+      const timeout = setTimeout(async () => {
+        try {
+          await this.loadPlugin(dirPath, filename, category)
+          log.info(`Reloaded plugin: ${filename}`)
+        } catch (error) {
+          log.error(`Failed to reload plugin ${filename}:`, error)
+        } finally {
+          this.reloadTimeouts.delete(key)
+        }
+      }, this.reloadDebounceMs)
+
+      this.reloadTimeouts.set(key, timeout)
+    } catch (error) {
+      log.error("Error handling file change:", error)
+    }
+  }
+
+  async clearWatchers() {
+    for (const watcher of this.watchers.values()) {
+      try { watcher.close?.() } catch (_) {}
+    }
+    this.watchers.clear()
+
+    for (const timeout of this.reloadTimeouts.values()) {
+      try { clearTimeout(timeout) } catch (_) {}
+    }
+    this.reloadTimeouts.clear()
+  }
+
+  findCommand(commandName) {
+    if (!commandName || typeof commandName !== 'string') return null
+    const pluginId = this.commands.get(commandName.toLowerCase())
+    return pluginId ? this.plugins.get(pluginId) || null : null
+  }
+
+  async executeCommand(sock, sessionId, commandName, args, m) {
+    try {
+      const plugin = this.findCommand(commandName)
+      if (!plugin) {
+        // Silently fail - no error messages for non-existent commands
+        return { success: false, silent: true }
+      }
+        
+      // Ensure pushName is available
+      if (!m.pushName) {
+        m.pushName = await this.extractPushName(sock, m)
+      }
+        
+      // Check if sender is bot owner
+      const isCreator = this.checkIsBotOwner(sock, m.sender)
+      
+      // Enhance message object
+      const enhancedM = {
+        ...m,
+        chat: m.chat || m.key?.remoteJid || m.from,
+        sender: m.sender || m.key?.participant || m.from,
+        isCreator,
+        isGroup: m.isGroup || (m.chat && m.chat.endsWith('@g.us')),
+        isAdmin: m.isAdmin || false,
+        isBotAdmin: m.isBotAdmin || false,
+        groupMetadata: m.groupMetadata || null,
+        participants: m.participants || null,
+        sessionContext: m.sessionContext || { telegram_id: "Unknown", session_id: sessionId },
+        sessionId,
+        reply: m.reply
+      }
+
+      // Check permissions
+      const permissionCheck = await this.checkPluginPermissions(sock, plugin, enhancedM)
+      if (!permissionCheck.allowed) {
+        return {
+          success: false,
+          error: permissionCheck.message
         }
       }
 
-      // Check if this is an anti-plugin (has processMessage method)
-      if (typeof plugin.processMessage === 'function') {
-        this.antiPlugins.set(pluginId, pluginData)
-        this.log.info(`Registered anti-plugin: ${pluginId}`)
-      }
-
-      this.log.info(`Loaded plugin: ${pluginId} (commands: ${plugin.commands?.join(", ") || "none"})`)
-    } catch (error) {
-      this.log.error(`Error loading plugin ${filename}:`, error)
-    }
-  }
-
-  validatePlugin(plugin, name) {
-    // Basic validation
-    if (!plugin.name || typeof plugin.execute !== 'function') {
-      this.log.warn(`Invalid plugin structure: ${name} (missing name or execute function)`)
-      return false
-    }
-
-    // Commands validation (not required for anti-plugins)
-    if (!plugin.commands && typeof plugin.processMessage !== 'function') {
-      this.log.warn(`Plugin ${name} has no commands array and no processMessage method`)
-      return false
-    }
-
-    // If it has commands, they should be an array
-    if (plugin.commands && !Array.isArray(plugin.commands)) {
-      this.log.warn(`Plugin ${name} commands must be an array`)
-      return false
-    }
-
-    return true
-  }
-
-  /**
-   * Register anti-plugins that will be called by message processor
-   */
-  async registerAntiPlugins() {
-    let registeredCount = 0
-    
-    for (const [pluginId, plugin] of this.plugins) {
-      if (typeof plugin.processMessage === 'function') {
-        this.antiPlugins.set(pluginId, plugin)
-        registeredCount++
-      }
-    }
-
-    this.log.info(`Auto-registered ${registeredCount} anti-plugins`)
-  }
-
-  async executeCommand(sock, sessionId, command, args, context) {
-    if (!this.isInitialized) {
-      throw new Error("Plugin system not initialized")
-    }
-
-    const pluginId = this.commands.get(command)
-    if (!pluginId) {
-      // Silently ignore unknown commands
-      return { success: false, ignore: true }
-    }
-
-    const plugin = this.plugins.get(pluginId)
-    if (!plugin) {
-      return { success: false, error: "Plugin not found" }
-    }
-
-    try {
-      // Check if plugin is category-restricted
-      if (plugin.category === "group" && !context.isGroup) {
-        return { success: false, error: "This command can only be used in groups" }
-      }
-      
-      if (plugin.category === "private" && context.isGroup) {
-        return { success: false, error: "This command can only be used in private chat" }
-      }
-
-      // Admin check is handled by individual plugins
-      
       // Execute plugin
-      this.log.debug(`Executing command: ${command} via plugin: ${pluginId}`)
-      const result = await plugin.execute(sock, sessionId, args, context)
-
-      return { success: true, result }
-    } catch (err) {
-      this.log.error(`Error executing command ${command}:`, err)
-      return { success: false, error: err?.message || String(err) }
+      const result = await this.executePluginWithFallback(sock, sessionId, args, enhancedM, plugin)
+      
+      return {
+        success: true,
+        result: result
+      }
+    } catch (error) {
+      log.error(`Error executing command ${commandName}:`, error)
+      return {
+        success: false,
+        error: `Error executing command: ${error.message}`
+      }
     }
   }
 
-  /**
-   * Get all anti-plugins for message processor
-   */
-  getAllAntiPlugins() {
-    return this.antiPlugins
+  async executePluginWithFallback(sock, sessionId, args, m, plugin) {
+    try {
+      // Ensure admin status is properly set for group commands
+      if (m.isGroup && (!m.hasOwnProperty('isAdmin') || !m.hasOwnProperty('isBotAdmin'))) {
+        try {
+          const AdminChecker = (await import("../whatsapp/utils/admin-checker.js")).default
+          const adminChecker = new AdminChecker()
+          
+          if (!m.hasOwnProperty('isAdmin')) {
+            m.isAdmin = await adminChecker.isGroupAdmin(sock, m.chat, m.sender)
+          }
+          if (!m.hasOwnProperty('isBotAdmin')) {
+            m.isBotAdmin = await adminChecker.isBotAdmin(sock, m.chat)
+          }
+        } catch (adminError) {
+          log.debug(`Failed to check admin status: ${adminError.message}`)
+          m.isAdmin = m.isAdmin || false
+          m.isBotAdmin = m.isBotAdmin || false
+        }
+      }
+
+      if (plugin.execute.length === 4) {
+        return await plugin.execute(sock, sessionId, args, m)
+      }
+      
+      if (plugin.execute.length === 3) {
+        const context = {
+          args: args || [],
+          quoted: m.quoted || null,
+          isAdmin: m.isAdmin || false,
+          isBotAdmin: m.isBotAdmin || false,
+          isCreator: m.isCreator || false,
+          store: null
+        }
+        return await plugin.execute(sock, m, context)
+      }
+
+      return await plugin.execute(sock, sessionId, args, m)
+    } catch (error) {
+      log.error(`Plugin execution failed for ${plugin.name}:`, error)
+      throw error
+    }
   }
 
-  /**
-   * Get all plugins (for backward compatibility)
-   */
-  getAllPlugins() {
-    return this.plugins
+  async checkPluginPermissions(sock, plugin, m) {
+    try {
+      if (!plugin) {
+        return { allowed: false, message: "❌ Plugin not found." }
+      }
+
+      const requiredPermission = this.determineRequiredPermission(plugin, m.command?.name)
+      
+      const categoryCheck = this.checkCategoryRestrictions(plugin, m)
+      if (!categoryCheck.allowed) {
+        return categoryCheck
+      }
+
+      if (requiredPermission === "owner" && !m.isCreator) {
+        return {
+          allowed: false,
+          message: "❌ This command is restricted to the bot owner only."
+        }
+      }
+
+      if (requiredPermission === "admin" && !m.isAdmin && !m.isCreator) {
+        return {
+          allowed: false,
+          message: "❌ This command requires admin privileges."
+        }
+      }
+
+      if (requiredPermission === "group_admin" && m.isGroup && !m.isAdmin && !m.isCreator) {
+        return {
+          allowed: false,
+          message: "❌ This command requires group admin privileges."
+        }
+      }
+
+      return { allowed: true }
+    } catch (error) {
+      log.error("Error checking permissions:", error)
+      return {
+        allowed: false,
+        message: "❌ Permission check failed."
+      }
+    }
   }
 
+  checkIsBotOwner(sock, userJid) {
+    try {
+      if (!sock?.user?.id || !userJid) return false
+
+      let botUserId = sock.user.id
+      if (botUserId.includes(':')) {
+        botUserId = botUserId.split(':')[0]
+      }
+      if (botUserId.includes('@')) {
+        botUserId = botUserId.split('@')[0]
+      }
+
+      let userNumber = userJid
+      if (userNumber.includes(':')) {
+        userNumber = userNumber.split(':')[0]
+      }
+      if (userNumber.includes('@')) {
+        userNumber = userNumber.split('@')[0]
+      }
+
+      return botUserId === userNumber
+    } catch (error) {
+      log.error("Error checking bot owner status:", error)
+      return false
+    }
+  }
+ 
+  determineRequiredPermission(plugin, command) {
+    if (!plugin) return "user"
+
+    // Check command-specific permissions
+    if (plugin.commandPermissions?.[command]) {
+      return plugin.commandPermissions[command].toLowerCase()
+    }
+
+    // Check permissions array - use most restrictive
+    if (plugin.permissions && Array.isArray(plugin.permissions) && plugin.permissions.length > 0) {
+      const perms = plugin.permissions.map(p => String(p).toLowerCase())
+      
+      if (perms.includes("owner")) return "owner"
+      if (perms.includes("admin") || perms.includes("system_admin")) return "admin"
+      if (perms.includes("group_admin")) return "group_admin"
+      if (perms.includes("user")) return "user"
+    }
+
+    // Legacy flags
+    if (plugin.ownerOnly === true) return "owner"
+    if (plugin.adminOnly === true) return "group_admin"
+
+    // Category-based permissions
+    const category = plugin.category?.toLowerCase() || ""
+    const filename = plugin.filename?.toLowerCase() || ""
+    const pluginPath = plugin.fullPath?.toLowerCase() || ""
+    
+    if (category.includes("owner") || filename.includes("owner") || pluginPath.includes("owner") || pluginPath.includes("/ownermenu/")) {
+      return "owner"
+    }
+
+    if (category.includes("group") || pluginPath.includes("group") || pluginPath.includes("/groupmenu/")) {
+      return "group_admin"
+    }
+
+    return "user"
+  }
+
+  checkCategoryRestrictions(plugin, m) {
+    const category = plugin.category?.toLowerCase() || ""
+    
+    if ((category === "group" || category === "groupmenu") && !m.isGroup) {
+      return {
+        allowed: false,
+        message: "❌ This command can only be used in groups."
+      }
+    }
+
+    if ((category === "private" || category === "privatemenu") && m.isGroup) {
+      return {
+        allowed: false,
+        message: "❌ This command can only be used in private chat."
+      }
+    }
+
+    return { allowed: true }
+  }
+
+  async processAntiPlugins(sock, sessionId, m) {
+    for (const plugin of this.antiPlugins.values()) {
+      try {
+        let enabled = true
+        if (typeof plugin.isEnabled === "function") {
+          enabled = await plugin.isEnabled(m.chat)
+        }
+        if (!enabled) continue
+
+        let shouldProcess = true
+        if (typeof plugin.shouldProcess === "function") {
+          shouldProcess = await plugin.shouldProcess(m)
+        }
+        if (!shouldProcess) continue
+
+        if (typeof plugin.processMessage === "function") {
+          await plugin.processMessage(sock, sessionId, m)
+        }
+      } catch (pluginErr) {
+        log.warn(`Anti-plugin error in ${plugin?.name || "unknown"}: ${pluginErr.message}`)
+      }
+    }
+  }
+
+  async shutdown() {
+    log.info("Shutting down plugin loader...")
+    await this.clearWatchers()
+    log.info("Plugin loader shutdown complete")
+  }
+
+  // Utility methods
   getAvailableCommands(category = null) {
     const commands = []
+    const seenPlugins = new Set()
 
     for (const [command, pluginId] of this.commands.entries()) {
       const plugin = this.plugins.get(pluginId)
-      if (!category || plugin.category === category || plugin.category === "both") {
+      if (seenPlugins.has(pluginId)) continue
+      seenPlugins.add(pluginId)
+
+      const pluginCategory = plugin.category.split("/")[0]
+      if (!category || pluginCategory === category || plugin.category === "both") {
         commands.push({
-          command,
+          command: plugin.commands[0],
           plugin: plugin.name,
           description: plugin.description,
           category: plugin.category,
           adminOnly: plugin.adminOnly || false,
-          usage: plugin.usage || `${command} - ${plugin.description}`,
+          permissions: plugin.permissions || [],
+          usage: plugin.usage || `${plugin.commands[0]} - ${plugin.description}`,
+          allCommands: plugin.commands,
         })
       }
     }
-
     return commands
   }
 
-  getPluginByCommand(command) {
-    const pluginId = this.commands.get(command)
-    if (!pluginId) return null
-    return this.plugins.get(pluginId)
-  }
-
-  getPluginById(pluginId) {
-    return this.plugins.get(pluginId)
-  }
-
-  /**
-   * Check if an anti-plugin is enabled for a specific group/chat
-   */
-  async isAntiPluginEnabled(pluginId, chatId) {
-    const plugin = this.antiPlugins.get(pluginId)
-    if (!plugin) return false
-
-    // If plugin has isEnabled method, use it
-    if (typeof plugin.isEnabled === 'function') {
-      try {
-        return await plugin.isEnabled(chatId)
-      } catch (error) {
-        this.log.error(`Error checking if anti-plugin ${pluginId} is enabled:`, error)
-        return false
-      }
-    }
-
-    // Default: enabled for groups, disabled for private chats
-    return chatId.endsWith("@g.us")
-  }
-
-  /**
-   * Process message through all enabled anti-plugins
-   */
-  async processAntiPlugins(sock, sessionId, context, message) {
-    if (this.antiPlugins.size === 0) return
-
-    for (const [pluginId, plugin] of this.antiPlugins) {
-      try {
-        // Check if plugin is enabled for this chat
-        const isEnabled = await this.isAntiPluginEnabled(pluginId, context.from)
-        if (!isEnabled) {
-          this.log.debug(`Anti-plugin ${pluginId} disabled for ${context.from}`)
-          continue
-        }
-
-        // Check if plugin should process this message type
-        if (typeof plugin.shouldProcess === 'function') {
-          const shouldProcess = await plugin.shouldProcess(context, message)
-          if (!shouldProcess) {
-            this.log.debug(`Anti-plugin ${pluginId} skipping message processing`)
-            continue
-          }
-        }
-
-        // Process the message
-        this.log.debug(`Processing message through anti-plugin: ${pluginId}`)
-        await plugin.processMessage(sock, sessionId, context, message)
-        
-      } catch (error) {
-        this.log.error(`Error in anti-plugin ${pluginId}:`, error)
-      }
-    }
-  }
-
-  /**
-   * Reload a specific plugin (useful for development)
-   */
-  async reloadPlugin(pluginId) {
-    const plugin = this.plugins.get(pluginId)
-    if (!plugin) {
-      throw new Error(`Plugin ${pluginId} not found`)
-    }
-
-    const { category, filename } = plugin
-    const pluginPath = category === "main" 
-      ? this.pluginDir 
-      : path.join(this.pluginDir, category)
-
-    // Remove old plugin data
-    this.plugins.delete(pluginId)
-    this.antiPlugins.delete(pluginId)
-    
-    // Remove old commands
-    for (const [command, cmdPluginId] of this.commands.entries()) {
-      if (cmdPluginId === pluginId) {
-        this.commands.delete(command)
-      }
-    }
-
-    // Reload plugin
-    await this.loadPlugin(pluginPath, filename, category)
-    
-    this.log.info(`Reloaded plugin: ${pluginId}`)
-  }
-
-  /**
-   * Get plugin statistics
-   */
   getPluginStats() {
     const categories = {}
     for (const plugin of this.plugins.values()) {
-      categories[plugin.category] = (categories[plugin.category] || 0) + 1
+      const rootCategory = plugin.category.split("/")[0]
+      categories[rootCategory] = (categories[rootCategory] || 0) + 1
     }
 
     return {
@@ -347,30 +604,38 @@ class PluginLoader {
       totalAntiPlugins: this.antiPlugins.size,
       categories,
       isInitialized: this.isInitialized,
+      autoReloadEnabled: this.autoReloadEnabled,
+      watchersActive: this.watchers.size,
     }
   }
 
-  /**
-   * List all loaded plugins with their info
-   */
   listPlugins() {
-    const pluginList = []
-    
-    for (const [pluginId, plugin] of this.plugins) {
-      pluginList.push({
-        id: pluginId,
+    return Array.from(this.plugins.values())
+      .map(plugin => ({
+        id: plugin.id,
         name: plugin.name,
         category: plugin.category,
         commands: plugin.commands || [],
-        hasAntiFeatures: typeof plugin.processMessage === 'function',
+        hasAntiFeatures: typeof plugin.processMessage === "function",
         adminOnly: plugin.adminOnly || false,
+        permissions: plugin.permissions || [],
         description: plugin.description,
-        loadedAt: plugin.loadedAt
-      })
-    }
-
-    return pluginList.sort((a, b) => a.name.localeCompare(b.name))
+        loadedAt: plugin.loadedAt,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
   }
 }
 
-export default new PluginLoader()
+// Create singleton instance
+const pluginLoader = new PluginLoader()
+
+// Graceful shutdown
+const shutdown = async () => {
+  await pluginLoader.shutdown()
+  process.exit(0)
+}
+
+process.on("SIGTERM", shutdown)
+process.on("SIGINT", shutdown)
+
+export default pluginLoader

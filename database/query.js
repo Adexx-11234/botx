@@ -1,13 +1,14 @@
+// Database query utilities
 // queries/index.js - Fixed Database Query Abstraction Layer
 // Updated to work with the new schema and proper constraints
 
-import { pool } from "../config/database.js";
-import { logger } from "../utils/logger.js";
+import { pool } from "../config/database.js"
+import { logger } from "../utils/logger.js"
 
 class QueryManager {
   constructor() {
-    this.cache = new Map();
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
+    this.cache = new Map()
+    this.cacheTimeout = 5 * 60 * 1000 // 5 minutes
   }
 
   /**
@@ -15,40 +16,35 @@ class QueryManager {
    */
   async execute(query, params = []) {
     try {
-      const result = await pool.query(query, params);
-      return result;
+      const result = await pool.query(query, params)
+      return result
     } catch (error) {
-      logger.error(`[QueryManager] Database error: ${error.message}`);
-      logger.error(`[QueryManager] Query: ${query}`);
-      logger.error(`[QueryManager] Params: ${JSON.stringify(params)}`);
-      throw error;
+      logger.error(`[QueryManager] Database error: ${error.message}`)
+      logger.error(`[QueryManager] Query: ${query}`)
+      logger.error(`[QueryManager] Params: ${JSON.stringify(params)}`)
+      throw error
     }
   }
 
   /**
    * Execute query with caching
    */
-  async executeWithCache(
-    cacheKey,
-    query,
-    params = [],
-    ttl = this.cacheTimeout
-  ) {
+  async executeWithCache(cacheKey, query, params = [], ttl = this.cacheTimeout) {
     if (this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey);
+      const cached = this.cache.get(cacheKey)
       if (Date.now() - cached.timestamp < ttl) {
-        return cached.data;
+        return cached.data
       }
-      this.cache.delete(cacheKey);
+      this.cache.delete(cacheKey)
     }
 
-    const result = await this.execute(query, params);
+    const result = await this.execute(query, params)
     this.cache.set(cacheKey, {
       data: result,
       timestamp: Date.now(),
-    });
+    })
 
-    return result;
+    return result
   }
 
   /**
@@ -56,14 +52,14 @@ class QueryManager {
    */
   clearCache(key = null) {
     if (key) {
-      this.cache.delete(key);
+      this.cache.delete(key)
     } else {
-      this.cache.clear();
+      this.cache.clear()
     }
   }
 }
 
-const queryManager = new QueryManager();
+const queryManager = new QueryManager()
 
 // ==========================================
 // GROUP SETTINGS QUERIES - FIXED VERSION
@@ -75,16 +71,161 @@ export const GroupQueries = {
    */
   async getSettings(groupJid) {
     try {
-      const result = await queryManager.execute(
-        `SELECT * FROM groups WHERE jid = $1`,
-        [groupJid]
-      );
-      return result.rows[0] || null;
+      const result = await queryManager.execute(`SELECT * FROM groups WHERE jid = $1`, [groupJid])
+      return result.rows[0] || null
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error getting settings for ${groupJid}: ${error.message}`
-      );
-      return null;
+      logger.error(`[GroupQueries] Error getting settings for ${groupJid}: ${error.message}`)
+      return null
+    }
+  },
+
+  /**
+   * Get group settings including grouponly and public_mode
+   */
+  async getGroupSettings(groupJid) {
+    try {
+      const query = `
+        SELECT grouponly_enabled, public_mode, antilink_enabled, is_bot_admin
+        FROM groups 
+        WHERE jid = $1
+      `
+      const result = await queryManager.execute(query, [groupJid])
+      
+      if (result.rows.length === 0) {
+        // Create group record if it doesn't exist
+        await this.ensureGroupExists(groupJid)
+        return {
+          grouponly_enabled: false,
+          public_mode: true,
+          antilink_enabled: false,
+          is_bot_admin: false
+        }
+      }
+      
+      return result.rows[0]
+    } catch (error) {
+      logger.error("Error getting group settings:", error)
+      return {
+        grouponly_enabled: false,
+        public_mode: true,
+        antilink_enabled: false,
+        is_bot_admin: false
+      }
+    }
+  },
+
+  /**
+   * Update group settings
+   */
+  async updateGroupSettings(groupJid, settings) {
+    try {
+      // Ensure group exists first
+      await this.ensureGroupExists(groupJid)
+      
+      const allowedFields = [
+        'grouponly_enabled', 'public_mode', 'antilink_enabled', 
+        'is_bot_admin', 'name', 'description'
+      ]
+      
+      const updates = []
+      const values = [groupJid]
+      let paramIndex = 2
+      
+      for (const [key, value] of Object.entries(settings)) {
+        if (allowedFields.includes(key)) {
+          updates.push(`${key} = $${paramIndex}`)
+          values.push(value)
+          paramIndex++
+        }
+      }
+      
+      if (updates.length === 0) {
+        throw new Error('No valid fields to update')
+      }
+      
+      updates.push(`updated_at = CURRENT_TIMESTAMP`)
+      
+      const query = `
+        UPDATE groups 
+        SET ${updates.join(', ')} 
+        WHERE jid = $1
+        RETURNING *
+      `
+      
+      const result = await queryManager.execute(query, values)
+      queryManager.clearCache(`group_settings_${groupJid}`)
+      return result.rows[0]
+      
+    } catch (error) {
+      logger.error("Error updating group settings:", error)
+      throw error
+    }
+  },
+
+  /**
+   * Check if grouponly is enabled for a group
+   */
+  async isGroupOnlyEnabled(groupJid) {
+    try {
+      const settings = await this.getGroupSettings(groupJid)
+      return settings.grouponly_enabled
+    } catch (error) {
+      logger.error("Error checking if grouponly enabled:", error)
+      return false
+    }
+  },
+
+  /**
+   * Check if public mode is enabled for a group
+   */
+  async isPublicModeEnabled(groupJid) {
+    try {
+      const settings = await this.getGroupSettings(groupJid)
+      return settings.public_mode
+    } catch (error) {
+      logger.error("Error checking if public mode enabled:", error)
+      return true // Default to public
+    }
+  },
+
+  async logAdminPromotion(groupJid, userJid, promotedBy) {
+    try {
+      await queryManager.execute(
+        `INSERT INTO admin_promotions (group_jid, user_jid, promoted_by, promoted_at) 
+         VALUES (?, ?, ?, NOW()) 
+         ON DUPLICATE KEY UPDATE promoted_at = NOW(), promoted_by = ?`,
+        [groupJid, userJid, promotedBy, promotedBy]
+      )
+    } catch (error) {
+      logger.error("Error logging admin promotion:", error)
+    }
+  },
+
+  async getUserPromoteTime(groupJid, userJid) {
+    try {
+      const result = await queryManager.execute(
+        `SELECT promoted_at FROM admin_promotions 
+         WHERE group_jid = ? AND user_jid = ? 
+         ORDER BY promoted_at DESC LIMIT 1`,
+        [groupJid, userJid]
+      )
+      
+      return result.length > 0 ? result[0].promoted_at : null
+    } catch (error) {
+      logger.error("Error getting user promote time:", error)
+      return null
+    }
+  },
+
+  async logMemberAddition(groupJid, addedUserJid, addedByJid) {
+    try {
+      await queryManager.execute(
+        `INSERT INTO group_member_additions (group_jid, added_user_jid, added_by_jid) 
+         VALUES (?, ?, ?)`,
+        [groupJid, addedUserJid, addedByJid]
+      )
+    } catch (error) {
+      logger.error("Error logging member addition:", error)
     }
   },
 
@@ -95,44 +236,83 @@ export const GroupQueries = {
     try {
       // Handle empty settings case
       if (Object.keys(settings).length === 0) {
-        const result = await queryManager.execute(
-          `INSERT INTO groups (jid, updated_at)
-           VALUES ($1, CURRENT_TIMESTAMP)
-           ON CONFLICT (jid)
-           DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-           RETURNING *`,
-          [groupJid]
-        );
-        return result.rows[0];
+        try {
+          const result = await queryManager.execute(
+            `INSERT INTO groups (jid, updated_at)
+             VALUES ($1, CURRENT_TIMESTAMP)
+             ON CONFLICT (jid)
+             DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+             RETURNING *`,
+            [groupJid],
+          )
+          return result.rows[0]
+        } catch (constraintError) {
+          if (constraintError.message.includes("no unique or exclusion constraint")) {
+            // Fallback: check if exists, then insert or update
+            const existsResult = await queryManager.execute(`SELECT * FROM groups WHERE jid = $1`, [groupJid])
+
+            if (existsResult.rows.length === 0) {
+              const result = await queryManager.execute(
+                `INSERT INTO groups (jid, updated_at) VALUES ($1, CURRENT_TIMESTAMP) RETURNING *`,
+                [groupJid],
+              )
+              return result.rows[0]
+            } else {
+              const result = await queryManager.execute(
+                `UPDATE groups SET updated_at = CURRENT_TIMESTAMP WHERE jid = $1 RETURNING *`,
+                [groupJid],
+              )
+              return result.rows[0]
+            }
+          } else {
+            throw constraintError
+          }
+        }
       }
 
       // Build dynamic query for multiple settings
-      const columns = Object.keys(settings);
-      const values = Object.values(settings);
-      const placeholders = columns.map((_, i) => `$${i + 2}`).join(", ");
-      const updateSet = columns
-        .map((col, i) => `${col} = $${i + 2}`)
-        .join(", ");
+      const columns = Object.keys(settings)
+      const values = Object.values(settings)
+      const placeholders = columns.map((_, i) => `$${i + 2}`).join(", ")
+      const updateSet = columns.map((col, i) => `${col} = $${i + 2}`).join(", ")
 
-      const query = `
-        INSERT INTO groups (jid, ${columns.join(", ")}, updated_at)
-        VALUES ($1, ${placeholders}, CURRENT_TIMESTAMP)
-        ON CONFLICT (jid)
-        DO UPDATE SET 
-          ${updateSet},
-          updated_at = CURRENT_TIMESTAMP
-        RETURNING *
-      `;
+      try {
+        const query = `
+          INSERT INTO groups (jid, ${columns.join(", ")}, updated_at)
+          VALUES ($1, ${placeholders}, CURRENT_TIMESTAMP)
+          ON CONFLICT (jid)
+          DO UPDATE SET 
+            ${updateSet},
+            updated_at = CURRENT_TIMESTAMP
+          RETURNING *
+        `
 
-      const result = await queryManager.execute(query, [groupJid, ...values]);
+        const result = await queryManager.execute(query, [groupJid, ...values])
+        queryManager.clearCache(`group_settings_${groupJid}`)
+        return result.rows[0]
+      } catch (constraintError) {
+        if (constraintError.message.includes("no unique or exclusion constraint")) {
+          // Fallback approach
+          const existsResult = await queryManager.execute(`SELECT * FROM groups WHERE jid = $1`, [groupJid])
 
-      // Clear related cache
-      queryManager.clearCache(`group_settings_${groupJid}`);
-
-      return result.rows[0];
+          if (existsResult.rows.length === 0) {
+            const query = `INSERT INTO groups (jid, ${columns.join(", ")}, updated_at) VALUES ($1, ${placeholders}, CURRENT_TIMESTAMP) RETURNING *`
+            const result = await queryManager.execute(query, [groupJid, ...values])
+            queryManager.clearCache(`group_settings_${groupJid}`)
+            return result.rows[0]
+          } else {
+            const query = `UPDATE groups SET ${updateSet}, updated_at = CURRENT_TIMESTAMP WHERE jid = $1 RETURNING *`
+            const result = await queryManager.execute(query, [groupJid, ...values])
+            queryManager.clearCache(`group_settings_${groupJid}`)
+            return result.rows[0]
+          }
+        } else {
+          throw constraintError
+        }
+      }
     } catch (error) {
-      logger.error(`[GroupQueries] Error in upsertSettings: ${error.message}`);
-      throw error;
+      logger.error(`[GroupQueries] Error in upsertSettings: ${error.message}`)
+      throw error
     }
   },
 
@@ -140,12 +320,10 @@ export const GroupQueries = {
    * Enable/disable specific anti-command - COMPLETELY FIXED
    */
   async setAntiCommand(groupJid, commandType, enabled) {
-    const columnName = `${commandType}_enabled`;
+    const columnName = `${commandType}_enabled`
 
     try {
-      logger.info(
-        `[GroupQueries] Setting ${commandType} to ${enabled} for group ${groupJid}`
-      );
+      logger.info(`[GroupQueries] Setting ${commandType} to ${enabled} for group ${groupJid}`)
 
       const result = await queryManager.execute(
         `INSERT INTO groups (jid, ${columnName}, updated_at)
@@ -155,57 +333,65 @@ export const GroupQueries = {
            ${columnName} = $2,
            updated_at = CURRENT_TIMESTAMP
          RETURNING ${columnName}`,
-        [groupJid, enabled]
-      );
+        [groupJid, enabled],
+      )
 
       // Clear all related cache
-      queryManager.clearCache(`group_settings_${groupJid}`);
-      queryManager.clearCache(`anti_${commandType}_${groupJid}`);
+      queryManager.clearCache(`group_settings_${groupJid}`)
+      queryManager.clearCache(`anti_${commandType}_${groupJid}`)
 
-      const returnValue = result.rows[0]?.[columnName] || false;
-      logger.info(
-        `[GroupQueries] Successfully set ${commandType} to ${returnValue} for ${groupJid}`
-      );
+      const returnValue = result.rows[0]?.[columnName] || false
+      logger.info(`[GroupQueries] Successfully set ${commandType} to ${returnValue} for ${groupJid}`)
 
-      return returnValue;
+      return returnValue
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error setting ${commandType}: ${error.message}`
-      );
-      throw error;
+      logger.error(`[GroupQueries] Error setting ${commandType}: ${error.message}`)
+      throw error
     }
   },
 
   /**
-   * Check if anti-command is enabled (with caching) - IMPROVED
+   * Check if anti-command is enabled (with caching) - FIXED FOR CONSTRAINT ISSUE AND NULL JID
    */
   async isAntiCommandEnabled(groupJid, commandType) {
-    const columnName = `${commandType}_enabled`;
+    if (!groupJid) {
+      logger.debug(`[GroupQueries] No groupJid provided for ${commandType} check, returning false`)
+      return false
+    }
+
+    const columnName = `${commandType}_enabled`
     try {
-      // Ensure row exists so settings are persisted, not ephemeral
-      await queryManager.execute(
-        `INSERT INTO groups (jid, updated_at) VALUES ($1, CURRENT_TIMESTAMP)
-         ON CONFLICT (jid) DO NOTHING`,
-        [groupJid]
-      );
+      // First try to insert, if constraint doesn't exist, handle gracefully
+      try {
+        await queryManager.execute(
+          `INSERT INTO groups (jid, updated_at) VALUES ($1, CURRENT_TIMESTAMP)
+           ON CONFLICT (jid) DO NOTHING`,
+          [groupJid],
+        )
+      } catch (constraintError) {
+        // If constraint doesn't exist, use alternative approach
+        if (constraintError.message.includes("no unique or exclusion constraint")) {
+          // Check if row exists first, then insert if not
+          const existsResult = await queryManager.execute(`SELECT id FROM groups WHERE jid = $1`, [groupJid])
 
-      const result = await queryManager.execute(
-        `SELECT ${columnName} FROM groups WHERE jid = $1`,
-        [groupJid]
-      );
+          if (existsResult.rows.length === 0) {
+            await queryManager.execute(`INSERT INTO groups (jid, updated_at) VALUES ($1, CURRENT_TIMESTAMP)`, [
+              groupJid,
+            ])
+          }
+        } else {
+          throw constraintError
+        }
+      }
 
-      const isEnabled =
-        result.rows.length > 0 && result.rows[0][columnName] === true;
-      logger.debug(
-        `[GroupQueries] ${commandType} enabled for ${groupJid}: ${isEnabled}`
-      );
+      const result = await queryManager.execute(`SELECT ${columnName} FROM groups WHERE jid = $1`, [groupJid])
 
-      return isEnabled;
+      const isEnabled = result.rows.length > 0 && result.rows[0][columnName] === true
+
+      return isEnabled
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error checking if ${commandType} enabled: ${error.message}`
-      );
-      return false; // Default to disabled on error
+      logger.error(`[GroupQueries] Error checking if ${commandType} enabled: ${error.message}`)
+      return false // Default to disabled on error
     }
   },
 
@@ -221,55 +407,82 @@ export const GroupQueries = {
           antigroupmention_enabled, antidelete_enabled, antiviewonce_enabled,
           antibot_enabled, antispam_enabled, antiraid_enabled,
           autowelcome_enabled, autokick_enabled,
-          welcome_enabled, goodbye_enabled
+          welcome_enabled, goodbye_enabled, grouponly_enabled, public_mode
         FROM groups 
         WHERE jid = $1`,
-        [groupJid]
-      );
+        [groupJid],
+      )
 
-      if (result.rows.length === 0) return {};
+      if (result.rows.length === 0) return {}
 
-      const settings = result.rows[0];
-      const enabled = {};
+      const settings = result.rows[0]
+      const enabled = {}
 
       Object.keys(settings).forEach((key) => {
         if (settings[key] === true) {
-          enabled[key.replace("_enabled", "")] = true;
+          enabled[key.replace("_enabled", "")] = true
         }
-      });
+      })
 
-      return enabled;
+      return enabled
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error getting enabled anti-commands: ${error.message}`
-      );
-      return {};
+      logger.error(`[GroupQueries] Error getting enabled anti-commands: ${error.message}`)
+      return {}
     }
   },
 
   /**
-   * Ensure group exists in database - IMPROVED
+   * Ensure group exists in database - FIXED FOR CONSTRAINT ISSUE AND NULL JID
    */
   async ensureGroupExists(groupJid, groupName = null) {
-    try {
-      const result = await queryManager.execute(
-        `INSERT INTO groups (jid, name, created_at, updated_at)
-         VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-         ON CONFLICT (jid) 
-         DO UPDATE SET 
-           name = COALESCE($2, groups.name),
-           updated_at = CURRENT_TIMESTAMP
-         RETURNING id`,
-        [groupJid, groupName]
-      );
+    if (!groupJid) {
+      logger.warn(`[GroupQueries] Cannot ensure group exists - no groupJid provided`)
+      return null
+    }
 
-      logger.debug(`[GroupQueries] Ensured group exists: ${groupJid}`);
-      return result.rows[0];
+    try {
+      try {
+        const result = await queryManager.execute(
+          `INSERT INTO groups (jid, name, created_at, updated_at)
+           VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (jid) 
+           DO UPDATE SET 
+             name = COALESCE($2, groups.name),
+             updated_at = CURRENT_TIMESTAMP
+           RETURNING id`,
+          [groupJid, groupName],
+        )
+
+        logger.debug(`[GroupQueries] Ensured group exists: ${groupJid}`)
+        return result.rows[0]
+      } catch (constraintError) {
+        if (constraintError.message.includes("no unique or exclusion constraint")) {
+          const existsResult = await queryManager.execute(`SELECT id FROM groups WHERE jid = $1`, [groupJid])
+
+          if (existsResult.rows.length === 0) {
+            const result = await queryManager.execute(
+              `INSERT INTO groups (jid, name, created_at, updated_at) VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id`,
+              [groupJid, groupName],
+            )
+            logger.debug(`[GroupQueries] Ensured group exists (fallback): ${groupJid}`)
+            return result.rows[0]
+          } else {
+            if (groupName) {
+              await queryManager.execute(`UPDATE groups SET name = $2, updated_at = CURRENT_TIMESTAMP WHERE jid = $1`, [
+                groupJid,
+                groupName,
+              ])
+            }
+            logger.debug(`[GroupQueries] Group already exists: ${groupJid}`)
+            return existsResult.rows[0]
+          }
+        } else {
+          throw constraintError
+        }
+      }
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error ensuring group exists: ${error.message}`
-      );
-      throw error;
+      logger.error(`[GroupQueries] Error ensuring group exists: ${error.message}`)
+      throw error
     }
   },
 
@@ -278,15 +491,13 @@ export const GroupQueries = {
    */
   async deleteGroup(groupJid) {
     try {
-      await queryManager.execute(`DELETE FROM groups WHERE jid = $1`, [
-        groupJid,
-      ]);
+      await queryManager.execute(`DELETE FROM groups WHERE jid = $1`, [groupJid])
       // Clear all related cache
-      queryManager.clearCache(`group_settings_${groupJid}`);
-      logger.info(`[GroupQueries] Deleted group: ${groupJid}`);
+      queryManager.clearCache(`group_settings_${groupJid}`)
+      logger.info(`[GroupQueries] Deleted group: ${groupJid}`)
     } catch (error) {
-      logger.error(`[GroupQueries] Error deleting group: ${error.message}`);
-      throw error;
+      logger.error(`[GroupQueries] Error deleting group: ${error.message}`)
+      throw error
     }
   },
 
@@ -295,7 +506,7 @@ export const GroupQueries = {
    */
   async updateGroupMeta(groupJid, metadata = {}) {
     try {
-      const { name, description, participantsCount, isBotAdmin } = metadata;
+      const { name, description, participantsCount, isBotAdmin } = metadata
 
       await queryManager.execute(
         `UPDATE groups 
@@ -305,17 +516,15 @@ export const GroupQueries = {
              is_bot_admin = COALESCE($5, is_bot_admin),
              updated_at = CURRENT_TIMESTAMP
          WHERE jid = $1`,
-        [groupJid, name, description, participantsCount, isBotAdmin]
-      );
+        [groupJid, name, description, participantsCount, isBotAdmin],
+      )
 
-      queryManager.clearCache(`group_settings_${groupJid}`);
+      queryManager.clearCache(`group_settings_${groupJid}`)
     } catch (error) {
-      logger.error(
-        `[GroupQueries] Error updating group meta: ${error.message}`
-      );
+      logger.error(`[GroupQueries] Error updating group meta: ${error.message}`)
     }
   },
-};
+}
 
 // ==========================================
 // WARNING SYSTEM QUERIES - ENHANCED
@@ -337,17 +546,15 @@ export const WarningQueries = {
            last_warning_at = CURRENT_TIMESTAMP,
            updated_at = CURRENT_TIMESTAMP
          RETURNING warning_count`,
-        [userJid, groupJid, warningType, reason]
-      );
+        [userJid, groupJid, warningType, reason],
+      )
 
-      const warningCount = result.rows[0]?.warning_count || 1;
-      logger.info(
-        `[WarningQueries] Added ${warningType} warning for ${userJid} in ${groupJid}: ${warningCount}/4`
-      );
-      return warningCount;
+      const warningCount = result.rows[0]?.warning_count || 1
+      logger.info(`[WarningQueries] Added ${warningType} warning for ${userJid} in ${groupJid}: ${warningCount}/4`)
+      return warningCount
     } catch (error) {
-      logger.error(`[WarningQueries] Error adding warning: ${error.message}`);
-      throw error;
+      logger.error(`[WarningQueries] Error adding warning: ${error.message}`)
+      throw error
     }
   },
 
@@ -356,29 +563,27 @@ export const WarningQueries = {
    */
   async resetUserWarnings(groupJid, userJid, warningType = null) {
     try {
-      let query, params;
+      let query, params
 
       if (warningType) {
-        query = `DELETE FROM warnings WHERE group_jid = $1 AND user_jid = $2 AND warning_type = $3`;
-        params = [groupJid, userJid, warningType];
+        query = `DELETE FROM warnings WHERE group_jid = $1 AND user_jid = $2 AND warning_type = $3`
+        params = [groupJid, userJid, warningType]
       } else {
-        query = `DELETE FROM warnings WHERE group_jid = $1 AND user_jid = $2`;
-        params = [groupJid, userJid];
+        query = `DELETE FROM warnings WHERE group_jid = $1 AND user_jid = $2`
+        params = [groupJid, userJid]
       }
 
-      const result = await queryManager.execute(query, params);
+      const result = await queryManager.execute(query, params)
       logger.info(
         `[WarningQueries] Reset ${
           warningType || "all"
-        } warnings for ${userJid} in ${groupJid} (${result.rowCount} removed)`
-      );
+        } warnings for ${userJid} in ${groupJid} (${result.rowCount} removed)`,
+      )
 
-      return result.rowCount;
+      return result.rowCount
     } catch (error) {
-      logger.error(
-        `[WarningQueries] Error resetting warnings: ${error.message}`
-      );
-      throw error;
+      logger.error(`[WarningQueries] Error resetting warnings: ${error.message}`)
+      throw error
     }
   },
 
@@ -390,15 +595,13 @@ export const WarningQueries = {
       const result = await queryManager.execute(
         `SELECT warning_count FROM warnings
          WHERE group_jid = $1 AND user_jid = $2 AND warning_type = $3`,
-        [groupJid, userJid, warningType]
-      );
+        [groupJid, userJid, warningType],
+      )
 
-      return result.rows[0]?.warning_count || 0;
+      return result.rows[0]?.warning_count || 0
     } catch (error) {
-      logger.error(
-        `[WarningQueries] Error getting warning count: ${error.message}`
-      );
-      return 0;
+      logger.error(`[WarningQueries] Error getting warning count: ${error.message}`)
+      return 0
     }
   },
 
@@ -407,7 +610,7 @@ export const WarningQueries = {
    */
   async getWarningStats(groupJid, warningType = null) {
     try {
-      let query, params;
+      let query, params
 
       if (warningType) {
         query = `
@@ -418,8 +621,8 @@ export const WarningQueries = {
             MAX(warning_count) as max_warnings
           FROM warnings
           WHERE group_jid = $1 AND warning_type = $2
-        `;
-        params = [groupJid, warningType];
+        `
+        params = [groupJid, warningType]
       } else {
         query = `
           SELECT 
@@ -429,28 +632,26 @@ export const WarningQueries = {
             MAX(warning_count) as max_warnings
           FROM warnings
           WHERE group_jid = $1
-        `;
-        params = [groupJid];
+        `
+        params = [groupJid]
       }
 
-      const result = await queryManager.execute(query, params);
+      const result = await queryManager.execute(query, params)
 
       return {
-        totalUsers: parseInt(result.rows[0]?.total_users) || 0,
-        totalWarnings: parseInt(result.rows[0]?.total_warnings) || 0,
-        avgWarnings: parseFloat(result.rows[0]?.avg_warnings) || 0,
-        maxWarnings: parseInt(result.rows[0]?.max_warnings) || 0,
-      };
+        totalUsers: Number.parseInt(result.rows[0]?.total_users) || 0,
+        totalWarnings: Number.parseInt(result.rows[0]?.total_warnings) || 0,
+        avgWarnings: Number.parseFloat(result.rows[0]?.avg_warnings) || 0,
+        maxWarnings: Number.parseInt(result.rows[0]?.max_warnings) || 0,
+      }
     } catch (error) {
-      logger.error(
-        `[WarningQueries] Error getting warning stats: ${error.message}`
-      );
+      logger.error(`[WarningQueries] Error getting warning stats: ${error.message}`)
       return {
         totalUsers: 0,
         totalWarnings: 0,
         avgWarnings: 0,
         maxWarnings: 0,
-      };
+      }
     }
   },
 
@@ -459,7 +660,7 @@ export const WarningQueries = {
    */
   async getWarningList(groupJid, warningType = null, limit = 10) {
     try {
-      let query, params;
+      let query, params
 
       if (warningType) {
         query = `
@@ -468,8 +669,8 @@ export const WarningQueries = {
           WHERE group_jid = $1 AND warning_type = $2
           ORDER BY last_warning_at DESC
           LIMIT $3
-        `;
-        params = [groupJid, warningType, limit];
+        `
+        params = [groupJid, warningType, limit]
       } else {
         query = `
           SELECT user_jid, warning_type, warning_count, reason, last_warning_at
@@ -477,20 +678,18 @@ export const WarningQueries = {
           WHERE group_jid = $1
           ORDER BY last_warning_at DESC
           LIMIT $2
-        `;
-        params = [groupJid, limit];
+        `
+        params = [groupJid, limit]
       }
 
-      const result = await queryManager.execute(query, params);
-      return result.rows;
+      const result = await queryManager.execute(query, params)
+      return result.rows
     } catch (error) {
-      logger.error(
-        `[WarningQueries] Error getting warning list: ${error.message}`
-      );
-      return [];
+      logger.error(`[WarningQueries] Error getting warning list: ${error.message}`)
+      return []
     }
   },
-};
+}
 
 // ==========================================
 // VIOLATION LOGGING QUERIES - ENHANCED
@@ -508,7 +707,7 @@ export const ViolationQueries = {
     detectedContent,
     actionTaken,
     warningNumber,
-    messageId
+    messageId,
   ) {
     try {
       await queryManager.execute(
@@ -527,16 +726,12 @@ export const ViolationQueries = {
           actionTaken,
           warningNumber,
           messageId,
-        ]
-      );
+        ],
+      )
 
-      logger.debug(
-        `[ViolationQueries] Logged ${violationType} violation for ${userJid} in ${groupJid}`
-      );
+      logger.debug(`[ViolationQueries] Logged ${violationType} violation for ${userJid} in ${groupJid}`)
     } catch (error) {
-      logger.error(
-        `[ViolationQueries] Error logging violation: ${error.message}`
-      );
+      logger.error(`[ViolationQueries] Error logging violation: ${error.message}`)
     }
   },
 
@@ -545,7 +740,7 @@ export const ViolationQueries = {
    */
   async getViolationStats(groupJid, violationType = null, days = 30) {
     try {
-      let query, params;
+      let query, params
 
       if (violationType) {
         query = `
@@ -557,8 +752,8 @@ export const ViolationQueries = {
           FROM violations
           WHERE group_jid = $1 AND violation_type = $2
             AND violated_at > CURRENT_DATE - INTERVAL '${days} days'
-        `;
-        params = [groupJid, violationType];
+        `
+        params = [groupJid, violationType]
       } else {
         query = `
           SELECT 
@@ -571,20 +766,18 @@ export const ViolationQueries = {
             AND violated_at > CURRENT_DATE - INTERVAL '${days} days'
           GROUP BY violation_type
           ORDER BY total_violations DESC
-        `;
-        params = [groupJid];
+        `
+        params = [groupJid]
       }
 
-      const result = await queryManager.execute(query, params);
-      return result.rows;
+      const result = await queryManager.execute(query, params)
+      return result.rows
     } catch (error) {
-      logger.error(
-        `[ViolationQueries] Error getting violation stats: ${error.message}`
-      );
-      return [];
+      logger.error(`[ViolationQueries] Error getting violation stats: ${error.message}`)
+      return []
     }
   },
-};
+}
 
 // ==========================================
 // MESSAGE QUERIES - ENHANCED
@@ -594,55 +787,45 @@ export const MessageQueries = {
   /**
    * Store message in database - FIXED
    */
-  async storeMessage(messageData) {
-    try {
-      const {
-        id,
-        fromJid,
-        senderJid,
-        timestamp,
-        content,
-        media,
-        mediaType,
-        sessionId,
-        userId,
-        isViewOnce,
-        fromMe,
-      } = messageData;
-
-      const result = await queryManager.execute(
-        `INSERT INTO messages (
-          id, from_jid, sender_jid, timestamp, content, media, 
-          media_type, session_id, user_id, is_view_once, from_me, created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-        ON CONFLICT (id, session_id)
-        DO UPDATE SET 
-          content = COALESCE($5, messages.content),
-          is_deleted = false
-        RETURNING n_o`,
-        [
-          id,
-          fromJid,
-          senderJid,
-          timestamp,
-          content,
-          media,
-          mediaType,
-          sessionId,
-          userId,
-          isViewOnce,
-          fromMe,
-        ]
-      );
-
-      return result.rows[0]?.n_o;
-    } catch (error) {
-      logger.error(`[MessageQueries] Error storing message: ${error.message}`);
-      throw error;
+ async storeMessage(messageData) {
+  try {
+    const { id, fromJid, senderJid, timestamp, content, media, mediaType, sessionId, userId, isViewOnce, fromMe, pushName } =
+      messageData
+    
+    // First try to update existing message
+    const updateResult = await queryManager.execute(
+      `UPDATE messages 
+       SET content = COALESCE($1, content),
+           media = COALESCE($2, media),
+           media_type = COALESCE($3, media_type),
+           push_name = COALESCE($4, push_name),
+           is_deleted = false
+       WHERE id = $5 AND session_id = $6
+       RETURNING id`,
+      [content, media, mediaType, pushName, id, sessionId]
+    )
+    
+    if (updateResult.rows.length > 0) {
+      return updateResult.rows[0].id
     }
-  },
-
+    
+    // If no rows updated, insert new message
+    const insertResult = await queryManager.execute(
+      `INSERT INTO messages (
+        id, from_jid, sender_jid, timestamp, content, media, 
+        media_type, session_id, user_id, is_view_once, from_me, push_name, created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
+      RETURNING id`,
+      [id, fromJid, senderJid, timestamp, content, media, mediaType, sessionId, userId, isViewOnce, fromMe, pushName]
+    )
+    return insertResult.rows[0]?.id
+  } catch (error) {
+    logger.error(`[MessageQueries] Error storing message: ${error.message}`)
+    throw error
+  }
+},
+    
   /**
    * Get recent messages from a chat
    */
@@ -654,15 +837,13 @@ export const MessageQueries = {
            AND is_deleted = false
          ORDER BY timestamp DESC
          LIMIT $3`,
-        [chatJid, sessionId, limit]
-      );
+        [chatJid, sessionId, limit],
+      )
 
-      return result.rows;
+      return result.rows
     } catch (error) {
-      logger.error(
-        `[MessageQueries] Error getting recent messages: ${error.message}`
-      );
-      return [];
+      logger.error(`[MessageQueries] Error getting recent messages: ${error.message}`)
+      return []
     }
   },
 
@@ -675,12 +856,10 @@ export const MessageQueries = {
         `UPDATE messages 
          SET is_deleted = true, deleted_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND session_id = $2`,
-        [messageId, sessionId]
-      );
+        [messageId, sessionId],
+      )
     } catch (error) {
-      logger.error(
-        `[MessageQueries] Error marking message deleted: ${error.message}`
-      );
+      logger.error(`[MessageQueries] Error marking message deleted: ${error.message}`)
     }
   },
 
@@ -696,18 +875,120 @@ export const MessageQueries = {
            AND is_deleted = false
          ORDER BY timestamp DESC
          LIMIT $4`,
-        [chatJid, sessionId, `%${searchTerm}%`, limit]
-      );
+        [chatJid, sessionId, `%${searchTerm}%`, limit],
+      )
 
-      return result.rows;
+      return result.rows
     } catch (error) {
-      logger.error(
-        `[MessageQueries] Error searching messages: ${error.message}`
-      );
-      return [];
+      logger.error(`[MessageQueries] Error searching messages: ${error.message}`)
+      return []
     }
   },
-};
+  /**
+   * Find message by ID with optional session filter - FIXED
+   */
+  async findMessageById(messageId, sessionId = null) {
+    try {
+      const params = [messageId]
+      let queryText = `
+        SELECT id, from_jid, sender_jid, timestamp, content, media, media_type, 
+               session_id, user_id, is_view_once, from_me, push_name, created_at
+        FROM messages 
+        WHERE id = $1
+      `
+
+      if (sessionId) {
+        queryText += " AND session_id = $2"
+        params.push(sessionId)
+      }
+
+      queryText += " ORDER BY timestamp DESC LIMIT 1"
+
+      const result = await queryManager.execute(queryText, params)
+      
+      if (result.rows.length === 0) {
+        logger.info(`[MessageQueries] Message not found: ${messageId}`)
+        return null
+      }
+
+      const row = result.rows[0]
+      return {
+        id: row.id,
+        fromJid: row.from_jid,
+        senderJid: row.sender_jid,
+        timestamp: this.normalizeTimestamp(row.timestamp),
+        content: row.content,
+        media: this.safeJsonParse(row.media),
+        mediaType: row.media_type,
+        sessionId: row.session_id,
+        userId: row.user_id,
+        isViewOnce: Boolean(row.is_view_once),
+        fromMe: Boolean(row.from_me),
+        pushName: row.push_name || 'Unknown', // FIXED: Added pushName
+        createdAt: row.created_at
+      }
+    } catch (error) {
+      logger.error("[MessageQueries] Error finding message by ID:", error)
+      return null
+    }
+  },
+
+  /**
+   * Delete message by ID (for cleanup after processing deletion)
+   */
+  async deleteMessageById(messageId, sessionId = null) {
+    try {
+      const params = [messageId]
+      let queryText = "DELETE FROM messages WHERE id = $1"
+
+      if (sessionId) {
+        queryText += " AND session_id = $2"
+        params.push(sessionId)
+      }
+
+      const result = await queryManager.execute(queryText, params)
+      
+      logger.info(`[MessageQueries] Deleted message ${messageId}: ${result.rowCount} rows affected`)
+      return { success: true, rowsDeleted: result.rowCount }
+    } catch (error) {
+      logger.error("[MessageQueries] Error deleting message:", error)
+      return { success: false, error: error.message }
+    }
+  },
+
+  /**
+   * Normalize timestamp to handle different formats
+   */
+  normalizeTimestamp(timestamp) {
+    if (!timestamp) return Math.floor(Date.now() / 1000)
+    
+    if (typeof timestamp === 'string') {
+      const parsed = parseInt(timestamp)
+      return isNaN(parsed) ? Math.floor(Date.now() / 1000) : parsed
+    }
+    
+    if (typeof timestamp === 'number') {
+      // If timestamp is in milliseconds, convert to seconds
+      return timestamp > 1e12 ? Math.floor(timestamp / 1000) : timestamp
+    }
+    
+    return Math.floor(Date.now() / 1000)
+  },
+
+  /**
+   * Safe JSON parsing with fallback
+   */
+  safeJsonParse(jsonString) {
+    if (!jsonString) return null
+    
+    try {
+      return typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString
+    } catch (error) {
+      logger.warn("[MessageQueries] Failed to parse JSON:", jsonString)
+      return null
+    }
+  },
+}
 
 // ==========================================
 // ANALYTICS QUERIES - ENHANCED
@@ -719,12 +1000,10 @@ export const AnalyticsQueries = {
    */
   async updateGroupAnalytics(groupJid, updates) {
     try {
-      const columns = Object.keys(updates);
-      const values = Object.values(updates);
-      const placeholders = columns.map((_, i) => `$${i + 3}`).join(", ");
-      const updateSet = columns
-        .map((col, i) => `${col} = ${col} + $${i + 3}`)
-        .join(", ");
+      const columns = Object.keys(updates)
+      const values = Object.values(updates)
+      const placeholders = columns.map((_, i) => `$${i + 3}`).join(", ")
+      const updateSet = columns.map((col, i) => `${col} = ${col} + $${i + 3}`).join(", ")
 
       await queryManager.execute(
         `INSERT INTO group_analytics (
@@ -733,12 +1012,10 @@ export const AnalyticsQueries = {
         VALUES ($1, $2, ${placeholders})
         ON CONFLICT (group_jid, date)
         DO UPDATE SET ${updateSet}`,
-        [groupJid, new Date().toISOString().split("T")[0], ...values]
-      );
+        [groupJid, new Date().toISOString().split("T")[0], ...values],
+      )
     } catch (error) {
-      logger.error(
-        `[AnalyticsQueries] Error updating analytics: ${error.message}`
-      );
+      logger.error(`[AnalyticsQueries] Error updating analytics: ${error.message}`)
     }
   },
 
@@ -752,18 +1029,371 @@ export const AnalyticsQueries = {
          WHERE group_jid = $1
            AND date > CURRENT_DATE - INTERVAL '${days} days'
          ORDER BY date DESC`,
-        [groupJid]
-      );
+        [groupJid],
+      )
 
-      return result.rows;
+      return result.rows
     } catch (error) {
-      logger.error(
-        `[AnalyticsQueries] Error getting analytics: ${error.message}`
-      );
-      return [];
+      logger.error(`[AnalyticsQueries] Error getting analytics: ${error.message}`)
+      return []
     }
   },
-};
+}
+
+// ==========================================
+// USER SETTINGS QUERIES - NEW ADDITION
+// ==========================================
+
+export const UserQueries = {
+  /**
+   * Get user by Telegram ID
+   */
+  async getUserByTelegramId(telegramId) {
+    try {
+      const result = await queryManager.execute(
+        `SELECT u.*, s.session_id, s.phone_number as user_jid 
+         FROM users u 
+         LEFT JOIN sessions s ON u.id = s.user_id AND s.is_connected = true
+         WHERE u.telegram_id = $1`,
+        [telegramId],
+      )
+      return result.rows[0] || null
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting user by telegram_id ${telegramId}: ${error.message}`)
+      return null
+    }
+  },
+
+  /**
+   * Get user by Session ID
+   */
+  async getUserBySessionId(sessionId) {
+    try {
+      const result = await queryManager.execute(
+        `SELECT u.*, s.session_id, s.phone_number as user_jid, s.is_connected
+         FROM users u 
+         INNER JOIN sessions s ON u.id = s.user_id
+         WHERE s.session_id = $1`,
+        [sessionId],
+      )
+      return result.rows[0] || null
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting user by session_id ${sessionId}: ${error.message}`)
+      return null
+    }
+  },
+
+  /**
+   * Get user settings
+   */
+  async getSettings(userJid) {
+    try {
+      const result = await queryManager.execute(`SELECT * FROM whatsapp_users WHERE jid = $1`, [userJid])
+      return result.rows[0] || null
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting settings for ${userJid}: ${error.message}`)
+      return null
+    }
+  },
+
+  /**
+   * Create or update user settings
+   */
+  async upsertSettings(userJid, settings = {}) {
+    try {
+      const telegramId = settings.telegram_id || null
+
+      // Handle empty settings case
+      if (Object.keys(settings).length === 0) {
+        const result = await queryManager.execute(
+          `INSERT INTO whatsapp_users (jid, telegram_id, updated_at)
+           VALUES ($1, $2, CURRENT_TIMESTAMP)
+           ON CONFLICT (jid)
+           DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [userJid, telegramId],
+        )
+        return result.rows[0]
+      }
+
+      // Build dynamic query for multiple settings
+      const columns = Object.keys(settings)
+      const values = Object.values(settings)
+      const placeholders = columns.map((_, i) => `$${i + 2}`).join(", ")
+      const updateSet = columns.map((col, i) => `${col} = $${i + 2}`).join(", ")
+
+      const query = `
+        INSERT INTO whatsapp_users (jid, ${columns.join(", ")}, updated_at)
+        VALUES ($1, ${placeholders}, CURRENT_TIMESTAMP)
+        ON CONFLICT (jid)
+        DO UPDATE SET 
+          ${updateSet},
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING *
+      `
+
+      const result = await queryManager.execute(query, [userJid, ...values])
+      queryManager.clearCache(`user_settings_${userJid}`)
+      return result.rows[0]
+    } catch (error) {
+      logger.error(`[UserQueries] Error in upsertSettings: ${error.message}`)
+      throw error
+    }
+  },
+
+  /**
+   * Enable/disable antiviewonce for user - FIXED to include telegram_id
+   */
+  async setAntiViewOnce(userJid, enabled, telegramId = null) {
+    try {
+      // Normalize JID to remove device ID
+      const normalizedJid = userJid ? userJid.replace(/:\d+@/, "@") : null
+
+      logger.info(
+        `[UserQueries] Setting antiviewonce to ${enabled} for user ${normalizedJid} (telegram_id: ${telegramId})`,
+      )
+
+      // Check if user already exists to prevent duplicates
+      const existingUser = await queryManager.execute(
+        `SELECT jid, telegram_id FROM whatsapp_users WHERE jid = $1 OR telegram_id = $2`,
+        [normalizedJid, telegramId],
+      )
+
+      let result
+      if (existingUser.rows.length > 0) {
+        // Update existing user
+        result = await queryManager.execute(
+          `UPDATE whatsapp_users 
+           SET antiviewonce_enabled = $1, 
+               jid = COALESCE($2, jid),
+               telegram_id = COALESCE($3, telegram_id),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE jid = $2 OR telegram_id = $3
+           RETURNING antiviewonce_enabled, telegram_id`,
+          [enabled, normalizedJid, telegramId],
+        )
+      } else {
+        // Insert new user only if none exists
+        result = await queryManager.execute(
+          `INSERT INTO whatsapp_users (jid, antiviewonce_enabled, telegram_id, updated_at)
+           VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+           RETURNING antiviewonce_enabled, telegram_id`,
+          [normalizedJid, enabled, telegramId],
+        )
+      }
+
+      queryManager.clearCache(`user_settings_${normalizedJid}`)
+      const returnValue = result.rows[0]?.antiviewonce_enabled || false
+      logger.info(`[UserQueries] Successfully set antiviewonce to ${returnValue} for ${normalizedJid}`)
+
+      return returnValue
+    } catch (error) {
+      logger.error(`[UserQueries] Error setting antiviewonce: ${error.message}`)
+      throw error
+    }
+  },
+
+  /**
+   * Check if antiviewonce is enabled for user - FIXED to accept telegram_id parameter
+   */
+  async isAntiViewOnceEnabled(userJid, telegramId = null) {
+    if (!userJid && !telegramId) {
+      logger.debug(`[UserQueries] No userJid or telegramId provided for antiviewonce check, returning false`)
+      return false
+    }
+
+    try {
+      let query, params
+
+      if (telegramId) {
+        query = `SELECT antiviewonce_enabled FROM whatsapp_users WHERE telegram_id = $1`
+        params = [telegramId]
+      } else {
+        // Normalize JID to remove device ID
+        const normalizedJid = userJid.replace(/:\d+@/, "@")
+        query = `SELECT antiviewonce_enabled FROM whatsapp_users WHERE jid = $1`
+        params = [normalizedJid]
+      }
+
+      const result = await queryManager.execute(query, params)
+
+      const isEnabled = result.rows.length > 0 && result.rows[0].antiviewonce_enabled === true
+      logger.debug(`[UserQueries] antiviewonce enabled for ${telegramId || userJid}: ${isEnabled}`)
+
+      return isEnabled
+    } catch (error) {
+      logger.error(`[UserQueries] Error checking if antiviewonce enabled: ${error.message}`)
+      return false
+    }
+  },
+
+  /**
+   * Get all users with antiviewonce enabled
+   */
+  async getAntiViewOnceUsers() {
+    try {
+      const result = await queryManager.execute(
+        `SELECT wu.jid, wu.telegram_id 
+         FROM whatsapp_users wu
+         WHERE wu.antiviewonce_enabled = true 
+         AND wu.jid IS NOT NULL 
+         AND wu.telegram_id IS NOT NULL`,
+      )
+      const validUsers = result.rows
+        .map((row) => ({
+          jid: row.jid,
+          telegram_id: row.telegram_id,
+        }))
+        .filter((user) => user.jid && user.jid.includes("@"))
+
+      logger.info(`[UserQueries] Found ${validUsers.length} valid antiviewonce users`)
+      return validUsers
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting antiviewonce users: ${error.message}`)
+      return []
+    }
+  },
+  async getAntiDelteUsers() {
+    try {
+      const result = await queryManager.execute(
+        `SELECT wu.jid, wu.telegram_id 
+         FROM whatsapp_users wu
+         WHERE wu.antideleted_enabled = true 
+         AND wu.jid IS NOT NULL 
+         AND wu.telegram_id IS NOT NULL`,
+      )
+      const validUsers = result.rows
+        .map((row) => ({
+          jid: row.jid,
+          telegram_id: row.telegram_id,
+        }))
+        .filter((user) => user.jid && user.jid.includes("@"))
+
+      logger.info(`[UserQueries] Found ${validUsers.length} valid antideleted users`)
+      return validUsers
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting antideleted users: ${error.message}`)
+      return []
+    }
+  },
+
+
+  /**
+   * Check if user has anti-deleted enabled
+   */
+  async isAntiDeletedEnabled(jid, telegramId) {
+    try {
+      const result = await queryManager.execute(`
+        SELECT antideleted_enabled 
+        FROM whatsapp_users 
+        WHERE jid = $1 AND telegram_id = $2
+      `, [jid, telegramId])
+
+      if (result.rows.length > 0) {
+        return Boolean(result.rows[0].antideleted_enabled)
+      }
+
+      return false
+    } catch (error) {
+      logger.error("[UserQueries] Error checking anti-deleted status:", error)
+      return false
+    }
+  },
+
+  /**
+   * Set anti-deleted status for user
+   */
+  async setAntiDeleted(jid, enabled, telegramId) {
+    try {
+      // First try to update existing record
+      const updateResult = await queryManager.execute(`
+        UPDATE whatsapp_users 
+        SET antideleted_enabled = $1, updated_at = CURRENT_TIMESTAMP 
+        WHERE jid = $2 AND telegram_id = $3
+        RETURNING id
+      `, [enabled, jid, telegramId])
+
+      if (updateResult.rows.length > 0) {
+        logger.info(`[UserQueries] Updated anti-deleted status for ${jid}: ${enabled}`)
+        return true
+      }
+
+      // If no existing record, create new one
+      await queryManager.execute(`
+        INSERT INTO whatsapp_users (jid, telegram_id, antideleted_enabled, created_at, updated_at)
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT (jid, telegram_id) 
+        DO UPDATE SET 
+          antideleted_enabled = EXCLUDED.antideleted_enabled,
+          updated_at = CURRENT_TIMESTAMP
+      `, [jid, telegramId, enabled])
+
+      logger.info(`[UserQueries] Set anti-deleted status for ${jid}: ${enabled}`)
+      return true
+    } catch (error) {
+      logger.error("[UserQueries] Error setting anti-deleted status:", error)
+      throw error
+    }
+  },
+
+  /**
+   * Get WhatsApp user by telegram_id (for both anti-viewonce and anti-deleted processing)
+   */
+  async getWhatsAppUserByTelegramId(telegramId) {
+    try {
+      const result = await queryManager.execute(
+        `SELECT jid, telegram_id, antideleted_enabled, antiviewonce_enabled
+         FROM whatsapp_users 
+         WHERE telegram_id = $1 
+         LIMIT 1`,
+        [telegramId]
+      )
+
+      if (result.rows.length > 0) {
+        return {
+          jid: result.rows[0].jid,
+          telegram_id: result.rows[0].telegram_id,
+          antideleted_enabled: Boolean(result.rows[0].antideleted_enabled),
+          antiviewonce_enabled: Boolean(result.rows[0].antiviewonce_enabled)
+        }
+      }
+
+      return null
+    } catch (error) {
+      logger.error(`[UserQueries] Error getting WhatsApp user by telegram_id ${telegramId}: ${error.message}`)
+      return null
+    }
+  },
+
+  /**
+   * Ensure user exists in database
+   */
+  async ensureUserExists(userJid, userName = null) {
+    if (!userJid) {
+      logger.warn(`[UserQueries] Cannot ensure user exists - no userJid provided`)
+      return null
+    }
+
+    try {
+      const result = await queryManager.execute(
+        `INSERT INTO whatsapp_users (jid, name, created_at, updated_at)
+         VALUES ($1, $2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT (jid) 
+         DO UPDATE SET 
+           name = COALESCE($2, whatsapp_users.name),
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING id`,
+        [userJid, userName],
+      )
+
+      logger.debug(`[UserQueries] Ensured user exists: ${userJid}`)
+      return result.rows[0]
+    } catch (error) {
+      logger.error(`[UserQueries] Error ensuring user exists: ${error.message}`)
+      throw error
+    }
+  },
+}
 
 // ==========================================
 // UTILITY FUNCTIONS - ENHANCED
@@ -775,14 +1405,12 @@ export const Utils = {
    */
   async cleanupOldData(days = 90) {
     try {
-      const result = await queryManager.execute(`SELECT cleanup_old_data($1)`, [
-        days,
-      ]);
+      const result = await queryManager.execute(`SELECT cleanup_old_data($1)`, [days])
 
-      return result.rows[0]?.cleanup_old_data || 0;
+      return result.rows[0]?.cleanup_old_data || 0
     } catch (error) {
-      logger.error(`[Utils] Error cleaning up old data: ${error.message}`);
-      return 0;
+      logger.error(`[Utils] Error cleaning up old data: ${error.message}`)
+      return 0
     }
   },
 
@@ -790,30 +1418,28 @@ export const Utils = {
    * Get database statistics
    */
   async getDatabaseStats() {
-    const stats = {};
+    const stats = {}
     const tables = [
       "users",
       "sessions",
       "messages",
       "groups",
       "warnings",
-      "violations",
-      "group_analytics",
       "settings",
-    ];
+      "group_analytics",
+      "whatsapp_users",
+    ]
 
     for (const table of tables) {
       try {
-        const result = await queryManager.execute(
-          `SELECT COUNT(*) as count FROM ${table}`
-        );
-        stats[table] = parseInt(result.rows[0].count);
+        const result = await queryManager.execute(`SELECT COUNT(*) as count FROM ${table}`)
+        stats[table] = Number.parseInt(result.rows[0].count)
       } catch (error) {
-        stats[table] = 0;
+        stats[table] = 0
       }
     }
 
-    return stats;
+    return stats
   },
 
   /**
@@ -821,14 +1447,12 @@ export const Utils = {
    */
   async testConnection() {
     try {
-      const result = await queryManager.execute("SELECT NOW() as current_time");
-      logger.info(
-        `[Utils] Database connection OK: ${result.rows[0].current_time}`
-      );
-      return true;
+      const result = await queryManager.execute("SELECT NOW() as current_time")
+      logger.info(`[Utils] Database connection OK: ${result.rows[0].current_time}`)
+      return true
     } catch (error) {
-      logger.error(`[Utils] Database connection failed: ${error.message}`);
-      return false;
+      logger.error(`[Utils] Database connection failed: ${error.message}`)
+      return false
     }
   },
 
@@ -845,23 +1469,23 @@ export const Utils = {
         FROM pg_constraint 
         WHERE contype = 'u' 
         AND conrelid::regclass::text IN (
-          'users', 'sessions', 'groups', 'messages', 
+          'whatsapp_users', 'sessions', 'groups', 'messages', 
           'warnings', 'settings', 'group_analytics'
         )
         ORDER BY table_name, constraint_name
-      `);
+      `)
 
-      logger.info("[Utils] Unique constraints found:");
+      logger.info("[Utils] Unique constraints found:")
       result.rows.forEach((row) => {
-        logger.info(`  ${row.table_name}: ${row.constraint_name}`);
-      });
+        logger.info(`  ${row.table_name}: ${row.constraint_name}`)
+      })
 
-      return result.rows;
+      return result.rows
     } catch (error) {
-      logger.error(`[Utils] Error verifying constraints: ${error.message}`);
-      return [];
+      logger.error(`[Utils] Error verifying constraints: ${error.message}`)
+      return []
     }
   },
-};
+}
 
-export default queryManager;
+export default queryManager

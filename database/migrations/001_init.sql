@@ -1,8 +1,12 @@
--- WhatsApp-Telegram Bot Platform Database Schema
--- Simple, migration-safe version
+-- 001_initial_schema.sql
+-- Complete WhatsApp-Telegram Bot Platform Database Schema
+-- Organized and optimized version with all features included
+
+-- Enable UUID extension if not exists
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Users table
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
     username VARCHAR(255),
@@ -16,7 +20,7 @@ CREATE TABLE users (
 );
 
 -- Sessions table
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id BIGSERIAL PRIMARY KEY,
     session_id VARCHAR(255) UNIQUE NOT NULL,
     user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
@@ -25,33 +29,48 @@ CREATE TABLE sessions (
     is_connected BOOLEAN DEFAULT FALSE,
     pairing_code VARCHAR(10),
     pairing_expires_at TIMESTAMP,
+    session_data TEXT,
     last_seen TIMESTAMP,
+    reconnect_attempts INTEGER DEFAULT 0,
+    setup_in_progress BOOLEAN DEFAULT FALSE,
+    callbacks TEXT,
     connection_status VARCHAR(50) DEFAULT 'disconnected',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Groups table with proper unique constraint
-CREATE TABLE groups (
+-- Comment for session_data column
+COMMENT ON COLUMN sessions.session_data IS 'Encrypted session credentials (base64 encoded) containing authentication data, supports both text and numeric values after encryption';
+
+-- Groups table with all moderation features
+CREATE TABLE IF NOT EXISTS groups (
     id BIGSERIAL PRIMARY KEY,
-    jid VARCHAR(255) NOT NULL,
+    jid VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255),
     description TEXT,
     grouponly_enabled BOOLEAN DEFAULT FALSE,
     public_mode BOOLEAN DEFAULT TRUE,
     antilink_enabled BOOLEAN DEFAULT FALSE,
     anticall_enabled BOOLEAN DEFAULT FALSE,
+    antipromote_enabled BOOLEAN DEFAULT FALSE,
+    antidemote_enabled BOOLEAN DEFAULT FALSE,
+    is_closed BOOLEAN DEFAULT FALSE,
+    closed_until TIMESTAMP,
+    antibot_enabled BOOLEAN DEFAULT FALSE,
+    antitag_enabled BOOLEAN DEFAULT FALSE,
+    antitagadmin_enabled BOOLEAN DEFAULT FALSE,
+    antigroupmention_enabled BOOLEAN DEFAULT FALSE,
     antiimage_enabled BOOLEAN DEFAULT FALSE,
     antivideo_enabled BOOLEAN DEFAULT FALSE,
     antiaudio_enabled BOOLEAN DEFAULT FALSE,
     antidocument_enabled BOOLEAN DEFAULT FALSE,
     antisticker_enabled BOOLEAN DEFAULT FALSE,
-    antigroupmention_enabled BOOLEAN DEFAULT FALSE,
     antidelete_enabled BOOLEAN DEFAULT FALSE,
     antiviewonce_enabled BOOLEAN DEFAULT FALSE,
-    antibot_enabled BOOLEAN DEFAULT FALSE,
     antispam_enabled BOOLEAN DEFAULT FALSE,
     antiraid_enabled BOOLEAN DEFAULT FALSE,
+    antiadd_enabled BOOLEAN DEFAULT FALSE,
+    antiremove_enabled BOOLEAN DEFAULT FALSE,
     autowelcome_enabled BOOLEAN DEFAULT FALSE,
     autokick_enabled BOOLEAN DEFAULT FALSE,
     welcome_enabled BOOLEAN DEFAULT FALSE,
@@ -63,11 +82,31 @@ CREATE TABLE groups (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add unique constraint separately to avoid naming issues
-ALTER TABLE groups ADD CONSTRAINT groups_jid_unique UNIQUE (jid);
+CREATE TABLE IF NOT EXISTS admin_promotions (
+  id SERIAL PRIMARY KEY,
+  group_jid VARCHAR(255) NOT NULL,
+  user_jid VARCHAR(255) NOT NULL,
+  promoted_by VARCHAR(255),
+  promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (group_jid, user_jid)
+);
+
+CREATE TABLE IF NOT EXISTS group_member_additions (
+  id SERIAL PRIMARY KEY,
+  group_jid VARCHAR(255) NOT NULL,
+  added_user_jid VARCHAR(255) NOT NULL,  
+  added_by_jid VARCHAR(255) NOT NULL,
+  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes separately
+CREATE INDEX IF NOT EXISTS idx_group_user ON admin_promotions (group_jid, user_jid);
+CREATE INDEX IF NOT EXISTS idx_promoted_at ON admin_promotions (promoted_at);
+CREATE INDEX IF NOT EXISTS idx_group_added ON group_member_additions (group_jid, added_at);
+CREATE INDEX IF NOT EXISTS idx_added_by ON group_member_additions (added_by_jid);
 
 -- Messages table
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
     n_o BIGSERIAL PRIMARY KEY,
     id VARCHAR(255) NOT NULL,
     from_jid VARCHAR(255) NOT NULL,
@@ -80,16 +119,28 @@ CREATE TABLE messages (
     user_id VARCHAR(255),
     is_view_once BOOLEAN DEFAULT FALSE,
     from_me BOOLEAN DEFAULT FALSE,
+    push_name VARCHAR(255) DEFAULT 'Unknown',
     is_deleted BOOLEAN DEFAULT FALSE,
     deleted_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add unique constraint for messages
-ALTER TABLE messages ADD CONSTRAINT messages_id_session_unique UNIQUE(id, session_id);
+-- WhatsApp users table with all anti-features
+CREATE TABLE IF NOT EXISTS whatsapp_users (
+    id BIGSERIAL PRIMARY KEY,
+    jid VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255),
+    phone VARCHAR(50),
+    telegram_id BIGINT,
+    antiviewonce_enabled BOOLEAN DEFAULT FALSE,
+    antideleted_enabled BOOLEAN DEFAULT FALSE,
+    is_banned BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Warnings table
-CREATE TABLE warnings (
+CREATE TABLE IF NOT EXISTS warnings (
     id BIGSERIAL PRIMARY KEY,
     user_jid VARCHAR(255) NOT NULL,
     group_jid VARCHAR(255) NOT NULL,
@@ -101,11 +152,8 @@ CREATE TABLE warnings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add unique constraint for warnings
-ALTER TABLE warnings ADD CONSTRAINT warnings_user_group_type_unique UNIQUE(user_jid, group_jid, warning_type);
-
 -- Violations table
-CREATE TABLE violations (
+CREATE TABLE IF NOT EXISTS violations (
     id BIGSERIAL PRIMARY KEY,
     user_jid VARCHAR(255) NOT NULL,
     group_jid VARCHAR(255) NOT NULL,
@@ -119,7 +167,7 @@ CREATE TABLE violations (
 );
 
 -- Settings table
-CREATE TABLE settings (
+CREATE TABLE IF NOT EXISTS settings (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
     session_id VARCHAR(255),
@@ -129,11 +177,8 @@ CREATE TABLE settings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add unique constraint for settings
-ALTER TABLE settings ADD CONSTRAINT settings_user_session_key_unique UNIQUE(user_id, session_id, setting_key);
-
 -- Group analytics table
-CREATE TABLE group_analytics (
+CREATE TABLE IF NOT EXISTS group_analytics (
     id BIGSERIAL PRIMARY KEY,
     group_jid VARCHAR(255) NOT NULL,
     date DATE NOT NULL,
@@ -149,22 +194,132 @@ CREATE TABLE group_analytics (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add unique constraint for analytics
-ALTER TABLE group_analytics ADD CONSTRAINT analytics_group_date_unique UNIQUE(group_jid, date);
+-- Add unique constraints using DO blocks for safe execution
+DO $$
+BEGIN
+    -- Messages table unique constraint
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'messages_id_session_unique'
+        AND table_name = 'messages'
+    ) THEN
+        ALTER TABLE messages ADD CONSTRAINT messages_id_session_unique UNIQUE(id, session_id);
+    END IF;
 
--- Create indexes
-CREATE INDEX idx_messages_session_id ON messages(session_id);
-CREATE INDEX idx_messages_from_jid ON messages(from_jid);
-CREATE INDEX idx_messages_sender_jid ON messages(sender_jid);
-CREATE INDEX idx_messages_timestamp ON messages(timestamp DESC);
-CREATE INDEX idx_groups_jid ON groups(jid);
-CREATE INDEX idx_warnings_user_group ON warnings(user_jid, group_jid);
-CREATE INDEX idx_violations_user_group ON violations(user_jid, group_jid);
-CREATE INDEX idx_violations_date ON violations(violated_at DESC);
-CREATE INDEX idx_sessions_telegram_id ON sessions(telegram_id);
-CREATE INDEX idx_users_telegram_id ON users(telegram_id);
+    -- Warnings table unique constraint
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'warnings_user_group_type_unique'
+        AND table_name = 'warnings'
+    ) THEN
+        ALTER TABLE warnings ADD CONSTRAINT warnings_user_group_type_unique UNIQUE(user_jid, group_jid, warning_type);
+    END IF;
 
--- Create trigger function
+    -- Settings table unique constraint
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'settings_user_session_key_unique'
+        AND table_name = 'settings'
+    ) THEN
+        ALTER TABLE settings ADD CONSTRAINT settings_user_session_key_unique UNIQUE(user_id, session_id, setting_key);
+    END IF;
+
+    -- Group analytics unique constraint
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'analytics_group_date_unique'
+        AND table_name = 'group_analytics'
+    ) THEN
+        ALTER TABLE group_analytics ADD CONSTRAINT analytics_group_date_unique UNIQUE(group_jid, date);
+    END IF;
+END $$;
+
+-- Create comprehensive indexes with safe execution
+DO $$
+BEGIN
+    -- Users table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_users_telegram_id') THEN
+        CREATE INDEX idx_users_telegram_id ON users(telegram_id);
+    END IF;
+
+    -- Sessions table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_sessions_telegram_id') THEN
+        CREATE INDEX idx_sessions_telegram_id ON sessions(telegram_id);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_sessions_session_data') THEN
+        CREATE INDEX idx_sessions_session_data ON sessions(session_id) WHERE session_data IS NOT NULL;
+    END IF;
+
+    -- Groups table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_groups_jid') THEN
+        CREATE INDEX idx_groups_jid ON groups(jid);
+    END IF;
+
+    -- Messages table indexes (comprehensive set)
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_session_id') THEN
+        CREATE INDEX idx_messages_session_id ON messages(session_id);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_from_jid') THEN
+        CREATE INDEX idx_messages_from_jid ON messages(from_jid);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_sender_jid') THEN
+        CREATE INDEX idx_messages_sender_jid ON messages(sender_jid);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_timestamp_desc') THEN
+        CREATE INDEX idx_messages_timestamp_desc ON messages(timestamp DESC);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_id_session') THEN
+        CREATE INDEX idx_messages_id_session ON messages(id, session_id);
+    END IF;
+
+    -- WhatsApp users table indexes (comprehensive set)
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_whatsapp_users_jid') THEN
+        CREATE INDEX idx_whatsapp_users_jid ON whatsapp_users(jid);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_whatsapp_users_telegram_id') THEN
+        CREATE INDEX idx_whatsapp_users_telegram_id ON whatsapp_users(telegram_id);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_whatsapp_users_antiviewonce') THEN
+        CREATE INDEX idx_whatsapp_users_antiviewonce ON whatsapp_users(antiviewonce_enabled) WHERE antiviewonce_enabled = true;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_whatsapp_users_telegram_antideleted') THEN
+        CREATE INDEX idx_whatsapp_users_telegram_antideleted ON whatsapp_users(telegram_id, antideleted_enabled);
+    END IF;
+
+    -- Warnings table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_warnings_user_group') THEN
+        CREATE INDEX idx_warnings_user_group ON warnings(user_jid, group_jid);
+    END IF;
+
+    -- Violations table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_violations_user_group') THEN
+        CREATE INDEX idx_violations_user_group ON violations(user_jid, group_jid);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_violations_date') THEN
+        CREATE INDEX idx_violations_date ON violations(violated_at DESC);
+    END IF;
+
+    -- Settings table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_settings_user_session') THEN
+        CREATE INDEX idx_settings_user_session ON settings(user_id, session_id);
+    END IF;
+
+    -- Group analytics table indexes
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_analytics_group_date') THEN
+        CREATE INDEX idx_analytics_group_date ON group_analytics(group_jid, date);
+    END IF;
+END $$;
+
+-- Create trigger function for updating timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -173,44 +328,42 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Add triggers
-CREATE TRIGGER update_users_updated_at 
-    BEFORE UPDATE ON users 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_sessions_updated_at 
-    BEFORE UPDATE ON sessions 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_groups_updated_at 
-    BEFORE UPDATE ON groups 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_warnings_updated_at 
-    BEFORE UPDATE ON warnings 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_settings_updated_at 
-    BEFORE UPDATE ON settings 
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Cleanup function
-CREATE OR REPLACE FUNCTION cleanup_old_data(days_to_keep INTEGER DEFAULT 90)
-RETURNS INTEGER AS $$
-DECLARE
-    deleted_count INTEGER;
+-- Create triggers safely
+DO $$
 BEGIN
-    DELETE FROM violations 
-    WHERE violated_at < CURRENT_DATE - INTERVAL '1 day' * days_to_keep;
-    
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    
-    DELETE FROM group_analytics 
-    WHERE date < CURRENT_DATE - INTERVAL '365 days';
-    
-    RETURN deleted_count;
-END;
-$$ LANGUAGE plpgsql;
+    -- Users table trigger
+    DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+    CREATE TRIGGER update_users_updated_at 
+        BEFORE UPDATE ON users 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Final message
-SELECT 'Database schema created successfully!' as status;
+    -- Sessions table trigger
+    DROP TRIGGER IF EXISTS update_sessions_updated_at ON sessions;
+    CREATE TRIGGER update_sessions_updated_at 
+        BEFORE UPDATE ON sessions 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- Groups table trigger
+    DROP TRIGGER IF EXISTS update_groups_updated_at ON groups;
+    CREATE TRIGGER update_groups_updated_at 
+        BEFORE UPDATE ON groups 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- WhatsApp users table trigger
+    DROP TRIGGER IF EXISTS update_whatsapp_users_updated_at ON whatsapp_users;
+    CREATE TRIGGER update_whatsapp_users_updated_at 
+        BEFORE UPDATE ON whatsapp_users 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- Warnings table trigger
+    DROP TRIGGER IF EXISTS update_warnings_updated_at ON warnings;
+    CREATE TRIGGER update_warnings_updated_at 
+        BEFORE UPDATE ON warnings 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- Settings table trigger
+    DROP TRIGGER IF EXISTS update_settings_updated_at ON settings;
+    CREATE TRIGGER update_settings_updated_at 
+        BEFORE UPDATE ON settings 
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+END $$;

@@ -1,161 +1,216 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import dotenv from "dotenv";
+import express from "express"
+import dotenv from "dotenv"
+import { createComponentLogger } from "./utils/logger.js"
+import { testConnection, closePool } from "./config/database.js"
+import { runMigrations } from "./database/migrations/run-migrations.js"
+import { WhatsAppTelegramBot } from "./telegram/bot.js"
+import { WhatsAppClient } from "./whatsapp/client.js"
+import { initializeSessionManager } from "./whatsapp/sessions/session-manager.js"
+import { WebInterface } from "./web/index.js"
+import pluginLoader from "./utils/plugin-loader.js"
+import cookieParser from 'cookie-parser'
+dotenv.config()
 
-dotenv.config();
+const logger = createComponentLogger("MAIN")
+const PORT = process.env.PORT || 3000
+const app = express()
 
-import { createComponentLogger } from "./utils/logger.js";
-import { sessionManager } from "./whatsapp/session-manager.js";
-import pool from "./config/database.js";
-import { WhatsAppTelegramBot } from "./telegram/bot.js";
-import { WhatsAppClient } from "./whatsapp/client.js";
-import pluginLoader from "./utils/plugin-loader.js";
+// Platform components
+let telegramBot = null
+let whatsappClient = null
+let sessionManager = null
+let webInterface = null
+let server = null
+let isInitialized = false
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Setup middleware
+app.use(express.json({ limit: "30mb" }))
+app.use(express.urlencoded({ extended: true, limit: "30mb" }))
+app.use(express.static("public"))
+app.use(cookieParser())
 
-const logger = createComponentLogger("MAIN");
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Setup web interface routes
+webInterface = new WebInterface()
+app.use('/', webInterface.router)
 
-const telegramBot = new WhatsAppTelegramBot();
-const whatsappClient = new WhatsAppClient(pluginLoader);
-
-// Middleware
-app.use(express.json());
-app.use(express.static("public"));
-
-// Health check endpoint
-app.get("/health", (req, res) => {
-  const stats = sessionManager.getStats();
-  res.json({
+// Health endpoints
+app.get("/health", async (req, res) => {
+  const health = {
     status: "healthy",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    sessions: stats,
-    version: "1.0.0",
-    telegram: telegramBot.getStats(),
-    whatsapp: whatsappClient.getStats(),
-  });
-});
+    initialized: isInitialized,
+    components: {
+      database: true,
+      telegram: !!telegramBot,
+      whatsapp: !!whatsappClient,
+      sessions: sessionManager ? sessionManager.activeSockets.size : 0,
+      sessionManager: !!sessionManager,
+      eventHandlersEnabled: sessionManager ? sessionManager.eventHandlersEnabled : false
+    }
+  }
+  res.json(health)
+})
 
-// Status endpoint for monitoring
-app.get("/status", (req, res) => {
+app.get("/api/status", async (req, res) => {
+  const stats = {}
+  
+  if (sessionManager) {
+    try {
+      stats.sessions = await sessionManager.getStats()
+    } catch (error) {
+      stats.sessions = { error: 'Failed to get stats' }
+    }
+  }
+  
   res.json({
     platform: "WhatsApp-Telegram Bot Platform",
-    status: "running",
-    batch: "Batch 2 - Telegram Bot Integration & WhatsApp Client Active",
-    nextBatch: "Batch 3 - Plugin System & Advanced Features",
-    sessions: sessionManager.getStats(),
-    telegram: telegramBot.getStats(),
-    whatsapp: whatsappClient.getStats(),
-    features: {
-      database: "PostgreSQL with proper Baileys JID format",
-      sessionManagement: "Multi-user session handling with cleanup",
-      logging: "Component-based logging with file and console output",
-      antiCommands: "4-warning system for group moderation",
-      groupControl: "grouponly mode for bot reply control",
-      telegramBot: "Active with authentication and admin system",
-      whatsappClient: "Active with multi-session support",
-    },
-    plugins: pluginLoader.getPluginStats(),
-  });
-});
+    status: isInitialized ? "operational" : "initializing",
+    ...stats,
+    telegram: telegramBot ? telegramBot.getStats?.() : null,
+    whatsapp: whatsappClient ? whatsappClient.getStats?.() : null
+  })
+})
 
 // Initialize platform
 async function initializePlatform() {
-  logger.info("Starting WhatsApp-Telegram Bot Platform...");
-
-  // Test database connection (non-fatal)
-  try {
-    await pool.query("SELECT NOW()");
-    logger.info("Database connection established");
-  } catch (error) {
-    logger.error("Database connection failed (server will still start)", error);
+  if (isInitialized) {
+    logger.warn("Platform already initialized, skipping...")
+    return
   }
 
-  // Initialize Telegram bot (non-fatal)
+  logger.info("Starting WhatsApp-Telegram Bot Platform...")
+  
   try {
-    logger.info("Initializing Telegram bot...");
-    const telegramInitialized = await telegramBot.initialize();
-    if (!telegramInitialized) {
-      logger.warn(
-        "Telegram bot failed to initialize; continuing without Telegram"
-      );
-    } else {
-      logger.info("Telegram bot initialized successfully ✅");
-    }
-  } catch (error) {
-    logger.error("Telegram bot initialization error (continuing)", error);
-  }
+    // 1. Database
+    logger.info("Connecting to database...")
+    await testConnection()
+    await runMigrations()
 
-  // Initialize WhatsApp client (non-fatal)
-  try {
-    logger.info("Initializing WhatsApp client...");
-    // Initialize plugin system first
-    await pluginLoader.loadPlugins();
-    logger.info("Plugins loaded successfully");
-    await whatsappClient.initialize();
-    logger.info("WhatsApp client initialized successfully ✅");
-  } catch (error) {
-    logger.error("WhatsApp client initialization error (continuing)", error);
-  }
+    // 2. Plugins
+    logger.info("Loading plugins...")
+    await pluginLoader.loadPlugins()
 
-  // Start maintenance interval: only clean up inactive sessions
-  setInterval(async () => {
-    try {
-      const cleaned = await sessionManager.cleanupInactiveSessions();
-      if (cleaned > 0) {
-        logger.info("Inactive sessions cleaned", { count: cleaned });
+    // 3. Telegram Bot
+    logger.info("Starting Telegram bot...")
+    telegramBot = new WhatsAppTelegramBot()
+    await telegramBot.initialize()
+
+    // 4. Session Manager - Initialize with event handlers disabled
+    logger.info("Starting session manager...")
+    sessionManager = initializeSessionManager(telegramBot)
+    
+    // Initialize existing sessions (this will automatically enable event handlers after 3 seconds)
+    logger.info("Initializing existing sessions...")
+    const { initialized, total } = await sessionManager.initializeExistingSessions()
+    logger.info(`Session initialization completed: ${initialized}/${total} sessions`)
+
+    // 5. Wait a bit more to ensure event handlers are enabled
+    logger.info("Waiting for event handlers to be enabled...")
+    await new Promise(resolve => setTimeout(resolve, 4000)) // Wait 4 seconds total
+
+    // 6. WhatsApp Client - only after session manager is fully ready
+    logger.info("Starting WhatsApp client...")
+    whatsappClient = new WhatsAppClient(pluginLoader)
+    whatsappClient.setTelegramBot(telegramBot)
+
+    // 7. HTTP Server
+    server = app.listen(PORT, () => {
+      logger.info(`Server running on port ${PORT}`)
+      logger.info("Platform initialization completed successfully")
+      logger.info(`Event handlers enabled: ${sessionManager.eventHandlersEnabled}`)
+      logger.info(`Web interface: http://localhost:${PORT}`)
+      logger.info(`Health check: http://localhost:${PORT}/health`)
+    })
+
+    isInitialized = true
+
+    // 8. Maintenance tasks - run less frequently and with better error handling
+    setInterval(async () => {
+      try {
+        if (sessionManager?.storage) {
+          const stats = await sessionManager.getStats()
+          if (stats.totalSessions > stats.connectedSessions) {
+            // Basic cleanup for disconnected sessions
+            logger.debug(`Maintenance: ${stats.connectedSessions}/${stats.totalSessions} sessions connected`)
+          }
+        }
+        
+        // Lightweight connection test
+        await testConnection()
+      } catch (error) {
+        logger.error("Maintenance task error:", error.message)
       }
-    } catch (error) {
-      logger.error("Maintenance cleanup error", error);
-    }
-  }, 300000); // Every 5 minutes
+    }, 600000) // 10 minutes
 
-  // Start HTTP server regardless of component init results
-  app.listen(PORT, () => {
-    logger.info("HTTP server running", { port: PORT });
-    logger.info("Platform Status:");
-    logger.info("   - Batch 1: Core Infrastructure ✅ COMPLETE");
-    logger.info("   - Batch 2: Bot Integration ✅ COMPLETE");
-    logger.info("   - Database schema with proper Baileys JID format ✅");
-    logger.info("   - Session management system ✅");
-    logger.info("   - Logging and error handling ✅");
-    logger.info(
-      "   - Telegram bot with authentication: " +
-        (telegramBot.getStats().isInitialized ? "✅" : "❌")
-    );
-    logger.info(
-      "   - WhatsApp client with multi-session support: " +
-        (whatsappClient.isInitialized ? "✅" : "❌")
-    );
-    logger.info("");
-    logger.info("🚀 Platform HTTP server is running");
-    logger.info("🔄 Next: Batch 3 - Plugin System & Advanced Features");
-  });
+  } catch (error) {
+    logger.error("Platform initialization failed:", error)
+    process.exit(1)
+  }
 }
 
 // Graceful shutdown
-process.on("SIGINT", async () => {
-  logger.info("Shutting down platform...");
-
+async function gracefulShutdown(signal) {
+  logger.info(`Received ${signal}, shutting down gracefully...`)
+  
   try {
-    await telegramBot.stop();
-    logger.info("Telegram bot stopped");
+    // Stop accepting new connections first
+    if (server) {
+      server.close()
+      logger.info("HTTP server closed")
+    }
 
-    await whatsappClient.cleanup();
-    logger.info("WhatsApp client cleaned up");
+    // Cleanup components in reverse order
+    if (whatsappClient) {
+      logger.info("Cleaning up WhatsApp client...")
+      await whatsappClient.cleanup()
+    }
 
-    await pool.end();
-    logger.info("Database connections closed");
-    process.exit(0);
+    if (telegramBot) {
+      logger.info("Stopping Telegram bot...")
+      await telegramBot.stop()
+    }
+
+    if (sessionManager) {
+      logger.info("Cleaning up session manager...")
+      await sessionManager.cleanup()
+    }
+
+    logger.info("Closing database connections...")
+    await closePool()
+    
+    logger.info("Graceful shutdown completed")
+    process.exit(0)
   } catch (error) {
-    logger.error("Error during shutdown", error);
-    process.exit(1);
+    logger.error("Shutdown error:", error)
+    process.exit(1)
   }
-});
+}
 
-// Start the platform
-initializePlatform();
+// Error handlers
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error)
+  // Don't exit immediately, try graceful shutdown
+  gracefulShutdown('uncaughtException')
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason)
+  // Log but don't exit for unhandled rejections unless critical
+})
+
+// Handle process warnings
+process.on('warning', (warning) => {
+  if (warning.name !== 'MaxListenersExceededWarning') {
+    logger.warn('Process warning:', warning.message)
+  }
+})
+
+// Start platform
+initializePlatform().catch((error) => {
+  logger.error("Failed to start platform:", error)
+  process.exit(1)
+})

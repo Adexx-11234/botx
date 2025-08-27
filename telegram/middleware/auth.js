@@ -1,4 +1,5 @@
-import { pool } from "../../database/connection.js"
+// telegram/middleware/auth.js - Fixed to use db operations
+import { db } from "../../database/db.js"
 import { logger } from "../../utils/logger.js"
 
 export class AuthMiddleware {
@@ -6,62 +7,51 @@ export class AuthMiddleware {
     this.userSessions = new Map()
   }
 
-  async authenticateUser(telegramId) {
+  async authenticateUser(telegramId, userInfo = null) {
     try {
-      const result = await pool.query("SELECT * FROM users WHERE telegram_id = $1", [telegramId])
+      console.log("[AUTH] Authenticating user:", telegramId)
 
-      if (result.rows.length === 0) {
-        // Create new user
-        await this.createUser(telegramId)
-        return { isAuthenticated: true, isNewUser: true }
+      // Use db operations instead of direct pool queries
+      let user = await db.getUserById(telegramId)
+      console.log("[AUTH] User query result:", user ? "Found" : "Not found")
+
+      if (!user) {
+        console.log("[AUTH] Creating new user for:", telegramId)
+        
+        // Create new user using db operations
+        user = await db.getOrCreateUser(telegramId, userInfo)
+        console.log("[AUTH] New user created successfully:", user.id)
+
+        return {
+          isAuthenticated: true,
+          isNewUser: true,
+          user: user,
+        }
       }
 
-      // Update activity timestamp
-      await pool.query("UPDATE users SET updated_at = NOW() WHERE telegram_id = $1", [telegramId])
+      console.log("[AUTH] Existing user authenticated:", telegramId)
 
       return {
         isAuthenticated: true,
         isNewUser: false,
-        user: result.rows[0],
+        user: user,
       }
     } catch (error) {
+      console.log("[AUTH] Authentication error:", error)
       logger.error("Auth middleware error:", error)
-      return { isAuthenticated: false, error: error.message }
-    }
-  }
 
-  async createUser(telegramId, username = null, firstName = null, lastName = null) {
-    try {
-      const result = await pool.query(
-        `
-                INSERT INTO users (telegram_id, username, first_name, last_name, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, NOW(), NOW())
-                RETURNING *
-            `,
-        [telegramId, username, firstName, lastName],
-      )
-
-      logger.info(`New user created: ${telegramId}`)
-      return result.rows[0]
-    } catch (error) {
-      logger.error("Error creating user:", error)
-      throw error
+      // Don't block the user, but log the error
+      return {
+        isAuthenticated: true, // Allow through even with DB errors
+        isNewUser: true,
+        error: error.message,
+      }
     }
   }
 
   async getUserSession(telegramId) {
     try {
-      const result = await pool.query(
-        `
-                SELECT s.*, u.username AS telegram_username, u.first_name 
-                FROM sessions s
-                JOIN users u ON s.user_id = u.id
-                WHERE u.telegram_id = $1 AND s.is_connected = true
-            `,
-        [telegramId],
-      )
-
-      return result.rows[0] || null
+      return await db.getUserSession(telegramId)
     } catch (error) {
       logger.error("Error getting user session:", error)
       return null
@@ -70,22 +60,7 @@ export class AuthMiddleware {
 
   async isUserConnected(telegramId) {
     const session = await this.getUserSession(telegramId)
-    return session !== null
-  }
-
-  async updateUserInfo(telegramId, username, firstName, lastName) {
-    try {
-      await pool.query(
-        `
-                UPDATE users 
-                SET username = $2, first_name = $3, last_name = $4, updated_at = NOW()
-                WHERE telegram_id = $1
-            `,
-        [telegramId, username, firstName, lastName],
-      )
-    } catch (error) {
-      logger.error("Error updating user info:", error)
-    }
+    return session !== null && session.is_connected
   }
 
   middleware() {
@@ -95,23 +70,34 @@ export class AuthMiddleware {
       const firstName = msg.from.first_name
       const lastName = msg.from.last_name
 
-      // Authenticate user
-      const authResult = await this.authenticateUser(telegramId)
+      console.log("[AUTH] Processing message from:", { telegramId, username, firstName })
 
-      if (!authResult.isAuthenticated) {
-        return false // Block the message
+      try {
+        // Authenticate user with their info
+        const authResult = await this.authenticateUser(telegramId, msg.from)
+
+        if (!authResult.isAuthenticated) {
+          console.log("[AUTH] User authentication failed, blocking message")
+          return false // Block the message
+        }
+
+        console.log("[AUTH] User authenticated successfully:", {
+          telegramId,
+          isNewUser: authResult.isNewUser,
+        })
+
+        // Add user info to metadata
+        metadata.user = authResult.user
+        metadata.isNewUser = authResult.isNewUser
+
+        return true // Allow the message to proceed
+      } catch (error) {
+        console.log("[AUTH] Middleware error:", error)
+        logger.error("Auth middleware error:", error)
+
+        // In case of errors, allow the message through to prevent blocking users
+        return true
       }
-
-      // Update user info if changed
-      if (!authResult.isNewUser) {
-        await this.updateUserInfo(telegramId, username, firstName, lastName)
-      }
-
-      // Add user info to metadata
-      metadata.user = authResult.user
-      metadata.isNewUser = authResult.isNewUser
-
-      return true // Allow the message to proceed
     }
   }
 }

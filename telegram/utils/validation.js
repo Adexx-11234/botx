@@ -1,3 +1,4 @@
+// utils/validation.js - Fixed validation utilities
 import { parsePhoneNumber, isValidPhoneNumber } from "libphonenumber-js"
 
 export class TelegramValidation {
@@ -41,24 +42,6 @@ export class TelegramValidation {
     return typeof telegramId === "number" && telegramId > 0
   }
 
-  static validatePassword(password) {
-    if (!password || password.length < 8) {
-      return {
-        isValid: false,
-        error: "Password must be at least 8 characters long",
-      }
-    }
-
-    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
-      return {
-        isValid: false,
-        error: "Password must contain at least one uppercase letter, one lowercase letter, and one number",
-      }
-    }
-
-    return { isValid: true }
-  }
-
   static sanitizeInput(input) {
     if (typeof input !== "string") return ""
 
@@ -71,4 +54,9 @@ export class TelegramValidation {
   static isValidCallbackData(data) {
     return typeof data === "string" && data.length > 0 && data.length <= 64
   }
+}
+
+// Simplified validation function for the connection handler
+export function validatePhone(phoneNumber) {
+  return TelegramValidation.validatePhoneNumber(phoneNumber)
 }

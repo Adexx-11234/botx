@@ -1,0 +1,213 @@
+/* eslint-disable no-unsafe-optional-chaining */
+const { WhatsAppInstance } = require('../class/instance')
+const logger = require('pino')()
+const config = require('../../config/config')
+
+class Session {
+    async restoreSessions() {
+        let restoredSessions = new Array()
+        let allCollections = []
+        try {
+            const db = mongoClient.db('whatsapp-api')
+            const result = await db.listCollections().toArray()
+            result.forEach((collection) => {
+                allCollections.push(collection.name)
+            })
+
+            allCollections.map((key) => {
+                const query = {}
+                db.collection(key)
+                    .find(query)
+                    .toArray(async (err, result) => {
+                        if (err) throw err
+                        const webhook = !config.webhookEnabled
+                            ? undefined
+                            : config.webhookEnabled
+                        const webhookUrl = !config.webhookUrl
+                            ? undefined
+                            : config.webhookUrl
+                        const instance = new WhatsAppInstance(
+                            key,
+                            webhook,
+                            webhookUrl
+                        )
+                        await instance.init()
+                        WhatsAppInstances[key] = instance
+                    })
+                restoredSessions.push(key)
+            })
+        } catch (e) {
+            logger.error('Error restoring sessions')
+            logger.error(e)
+        }
+        return restoredSessions
+    }
+}
+
+exports.Session = Session
+
+/* eslint-disable no-unsafe-optional-chaining */
+const QRCode = require('qrcode')
+const pino = require('pino')
+const {
+    default: makeWASocket,
+    DisconnectReason,
+} = require('@whiskeysockets/baileys')
+const { unlinkSync } = require('fs')
+const { v4: uuidv4 } = require('uuid')
+const path = require('path')
+const processButton = require('../helper/processbtn')
+const generateVC = require('../helper/genVc')
+const Chat = require('../models/chat.model')
+const axios = require('axios')
+const config = require('../../config/config')
+const downloadMessage = require('../helper/downloadMsg')
+const logger = require('pino')()
+const useMongoDBAuthState = require('../helper/mongoAuthState')
+
+class WhatsAppInstance {
+    socketConfig = {
+        defaultQueryTimeoutMs: undefined,
+        printQRInTerminal: false,
+        logger: pino({
+            level: config.log.level,
+        }),
+    }
+    key = ''
+    authState
+    allowWebhook = undefined
+    webhook = undefined
+
+    instance = {
+        key: this.key,
+        chats: [],
+        qr: '',
+        messages: [],
+        qrRetry: 0,
+        customWebhook: '',
+    }
+
+    axiosInstance = axios.create({
+        baseURL: config.webhookUrl,
+    })
+
+    constructor(key, allowWebhook, webhook) {
+        this.key = key ? key : uuidv4()
+        this.instance.customWebhook = this.webhook ? this.webhook : webhook
+        this.allowWebhook = config.webhookEnabled
+            ? config.webhookEnabled
+            : allowWebhook
+        if (this.allowWebhook && this.instance.customWebhook !== null) {
+            this.allowWebhook = true
+            this.instance.customWebhook = webhook
+            this.axiosInstance = axios.create({
+                baseURL: webhook,
+            })
+        }
+    }
+
+    async SendWebhook(type, body, key) {
+        if (!this.allowWebhook) return
+        this.axiosInstance
+            .post('', {
+                type,
+                body,
+                instanceKey: key,
+            })
+            .catch(() => {})
+    }
+
+    async init() {
+        this.collection = mongoClient.db('whatsapp-api').collection(this.key)
+        const { state, saveCreds } = await useMongoDBAuthState(this.collection)
+        this.authState = { state: state, saveCreds: saveCreds }
+        this.socketConfig.auth = this.authState.state
+        this.socketConfig.browser = Object.values(config.browser)
+        this.instance.sock = makeWASocket(this.socketConfig)
+        this.setHandler()
+        return this
+    }
+
+    setHandler() {
+        const sock = this.instance.sock
+        // on credentials update save state
+        sock?.ev.on('creds.update', this.authState.saveCreds)
+
+        // on socket closed, opened, connecting
+        sock?.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update
+
+            if (connection === 'connecting') return
+
+            if (connection === 'close') {
+                // reconnect if not logged out
+                if (
+                    lastDisconnect?.error?.output?.statusCode !==
+                    DisconnectReason.loggedOut
+                ) {
+                    await this.init()
+                } else {
+                    await this.collection.drop().then((r) => {
+                        logger.info('STATE: Droped collection')
+                    })
+                    this.instance.online = false
+                }
+
+                if (
+                    [
+                        'all',
+                        'connection',
+                        'connection.update',
+                        'connection:close',
+                    ].some((e) => config.webhookAllowedEvents.includes(e))
+                )
+                    await this.SendWebhook(
+                        'connection',
+                        {
+                            connection: connection,
+                        },
+                        this.key
+                    )
+            } else if (connection === 'open') {
+                if (config.mongoose.enabled) {
+                    let alreadyThere = await Chat.findOne({
+                        key: this.key,
+                    }).exec()
+                    if (!alreadyThere) {
+                        const saveChat = new Chat({ key: this.key })
+                        await saveChat.save()
+                    }
+                }
+                this.instance.online = true
+                if (
+                    [
+                        'all',
+                        'connection',
+                        'connection.update',
+                        'connection:open',
+                    ].some((e) => config.webhookAllowedEvents.includes(e))
+                )
+                    await this.SendWebhook(
+                        'connection',
+                        {
+                            connection: connection,
+                        },
+                        this.key
+                    )
+            }
+
+            if (qr) {
+                QRCode.toDataURL(qr).then((url) => {
+                    this.instance.qr = url
+                    this.instance.qrRetry++
+                    if (this.instance.qrRetry >= config.instance.maxRetryQr) {
+                        // close WebSocket connection
+                        this.instance.sock.ws.close()
+                        // remove all events
+                        this.instance.sock.ev.removeAllListeners()
+                        this.instance.qr = ' '
+                        logger.info('socket connection terminated')
+                    }
+                })
+            }
+        })

@@ -1,420 +1,90 @@
-import { logger } from "../utils/logger.js";
-import { sessionManager } from "./session-manager.js";
-import { MessageHandler } from "./handlers/message-handler.js";
-import { EventHandler } from "./handlers/events.js";
-import { AuthHandler } from "./handlers/auth.js";
-import { GroupHandler } from "./handlers/groups.js";
-import { messageSender } from "./utils/sender.js";
-import path from "path";
-import fs from "fs";
+// Simplified WhatsApp client - delegates everything to session manager
+import { logger } from "../utils/logger.js"
+import { sessionManager } from "./sessions/session-manager.js"
 
 export class WhatsAppClient {
   constructor(pluginManager) {
-    this.sessionManager = sessionManager;
-    this.pluginManager = pluginManager;
-    this.clients = new Map();
-    this.authStates = new Map();
-    this.isInitialized = false;
-
-    // Initialize handlers for message and event processing
-    this.messageHandler = new MessageHandler(this);
-    this.eventHandler = new EventHandler(this.sessionManager);
-    this.authHandler = new AuthHandler(this);
-    this.groupHandler = new GroupHandler(this);
-
-    global.whatsappClientInstance = this;
-
-    logger.info("[WhatsApp] WhatsApp client initialized");
+    this.sessionManager = sessionManager
+    this.pluginManager = pluginManager
+    this.telegramBot = null
+    this.isInitialized = false
+    this.initTime = null
   }
 
-  async initialize() {
-    if (this.isInitialized) {
-      return;
+  setTelegramBot(telegramBot) {
+    this.telegramBot = telegramBot
+    // Pass telegram bot to session manager for connection notifications
+    if (this.sessionManager) {
+      this.sessionManager.telegramBot = telegramBot
     }
+  }
 
+  // Create session - delegates to session manager
+  async createSession(userId, phoneNumber = null, callbacks = {}) {
     try {
-      const sessionsDir = path.join(process.cwd(), "sessions");
-      if (!fs.existsSync(sessionsDir)) {
-        fs.mkdirSync(sessionsDir, { recursive: true });
-      }
-
-      await this.sessionManager.initializeExistingSessions({
-        onConnectionUpdate: async (update) => {
-          try {
-            if (update.status === "connected" && update.sessionId && update.sock) {
-              await this.handleConnectionOpen(update.sessionId, update.sock, null);
-            }
-          } catch (err) {
-            logger.error(`[WhatsApp] Error handling existing session open: ${err.message}`);
-          }
-        },
-      });
-
-      this.isInitialized = true;
-      this.initTime = Date.now();
-      logger.info("[WhatsApp] WhatsApp client initialized successfully");
+      return await this.sessionManager.createSession(userId, phoneNumber, callbacks)
     } catch (error) {
-      logger.error(`[WhatsApp] Error initializing client: ${error.message}`);
-      throw error;
+      logger.error(`[WhatsApp] Error creating session ${userId}: ${error.message}`)
+      throw error
     }
   }
 
-  async createSession(userId, phoneNumber, callbacks = {}) {
-    try {
-      if (this.sessionManager.hasExistingSession(userId)) {
-        logger.info(
-          `[WhatsApp] Session ${userId} already exists, reconnecting...`
-        );
-      }
-
-      const sock = await this.sessionManager.createSession(
-        userId,
-        phoneNumber,
-        {
-          ...callbacks,
-          onConnectionUpdate: async (update) => {
-            if (update.status === "connected") {
-              await this.handleConnectionOpen(userId, update.sock, phoneNumber);
-            }
-            if (callbacks.onConnectionUpdate) {
-              await callbacks.onConnectionUpdate(update);
-            }
-          },
-        }
-      );
-
-      return sock;
-    } catch (error) {
-      logger.error(
-        `[WhatsApp] Error creating session ${userId}: ${error.message}`
-      );
-      throw error;
-    }
-  }
-
-  async handleConnectionOpen(sessionId, sock, phoneNumber) {
-    try {
-      logger.info(`[WhatsApp] Connection opened for session ${sessionId}`);
-
-      this.clients.set(sessionId, {
-        sock,
-        sessionId,
-        phoneNumber,
-        status: "open",
-        createdAt: Date.now(),
-      });
-
-      logger.info(
-        `[WhatsApp] Session ${sessionId} is now ready to receive messages!`
-      );
-    } catch (error) {
-      logger.error(
-        `[WhatsApp] Error handling connection open: ${error.message}`
-      );
-    }
-  }
-
-  async sendText(sessionId, chatId, text) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendText(client.sock, chatId, text);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending text: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendImage(sessionId, chatId, image, caption = null) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendImage(client.sock, chatId, image, caption);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending image: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendVideo(sessionId, chatId, video, caption = null) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendVideo(client.sock, chatId, video, caption);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending video: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendAudio(sessionId, chatId, audio, options = {}) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendAudio(client.sock, chatId, audio, options);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending audio: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendDocument(sessionId, chatId, document, options = {}) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendDocument(client.sock, chatId, document, options);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending document: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendSticker(sessionId, chatId, sticker, options = {}) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendSticker(client.sock, chatId, sticker, options);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending sticker: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
-  async sendButtonMessage(sessionId, chatId, text, buttons, options = {}) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.messageHandler.sendButtonMessage(client.sock, chatId, text, buttons, options);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error sending button message: ${error.message}`);
-      return { error: error.message };
-    }
-  }
-
+  // Disconnect session - delegates to session manager  
   async disconnectSession(sessionId) {
     try {
-      const client = this.clients.get(sessionId);
-      if (!client) {
-        logger.warn(`[WhatsApp] Session ${sessionId} not found for disconnect`);
-        return false;
-      }
-
-      await this.sessionManager.cleanupSession(sessionId);
-
-      this.clients.delete(sessionId);
-      this.authStates.delete(sessionId);
-
-      logger.info(`[WhatsApp] Session ${sessionId} disconnected`);
-      return true;
+      return await this.sessionManager.disconnectSession(sessionId)
     } catch (error) {
-      logger.error(
-        `[WhatsApp] Error disconnecting session ${sessionId}: ${error.message}`
-      );
-      return false;
+      logger.error(`[WhatsApp] Error disconnecting session ${sessionId}: ${error.message}`)
+      return false
     }
   }
 
-  async getSessionStatus(sessionId) {
-    const session = this.sessionManager.getSession(sessionId);
-    if (!session) {
-      return { status: "not_found" };
-    }
+  // Complete user cleanup - delegates to session manager
+  async performCompleteUserCleanup(userId) {
+    return await this.sessionManager.performCompleteUserCleanup(userId)
+  }
 
-    const client = this.clients.get(sessionId);
-    return {
-      status: client?.status || "unknown",
-      sessionId: sessionId,
-      phoneNumber: session.phoneNumber,
-      createdAt: client?.createdAt || Date.now(),
-      uptime: client ? Date.now() - client.createdAt : 0,
-    };
+  // Session info methods - delegate to session manager
+  getSession(sessionId) {
+    return this.sessionManager.getSession(sessionId)
+  }
+
+  async getSessionByWhatsAppJid(jid) {
+    return await this.sessionManager.getSessionByWhatsAppJid(jid)
   }
 
   async getAllSessions() {
-    const sessionIds = this.sessionManager.getAllSessions();
-    const sessions = [];
-
-    for (const sessionId of sessionIds) {
-      const status = await this.getSessionStatus(sessionId);
-      sessions.push(status);
-    }
-
-    return sessions;
+    return await this.sessionManager.getAllSessions()
   }
 
-  async getGroupInfo(sessionId, groupJid) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.groupHandler.getGroupInfo(client.sock, groupJid);
-    } catch (error) {
-      logger.error(`[WhatsApp] Error getting group info: ${error.message}`);
-      throw error;
-    }
+  async isSessionConnected(sessionId) {
+    return await this.sessionManager.isSessionConnected(sessionId)
   }
 
-  async kickUser(sessionId, groupJid, adminJid, targetJid) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.groupHandler.kickUser(
-        client.sock,
-        groupJid,
-        adminJid,
-        targetJid
-      );
-    } catch (error) {
-      logger.error(`[WhatsApp] Error kicking user: ${error.message}`);
-    }
+  generateSessionId(userId) {
+    return this.sessionManager.generateSessionId(userId)
   }
 
-  async addUser(sessionId, groupJid, adminJid, targetJid) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.groupHandler.addUser(
-        client.sock,
-        groupJid,
-        adminJid,
-        targetJid
-      );
-    } catch (error) {
-      logger.error(`[WhatsApp] Error adding user: ${error.message}`);
-    }
-  }
-
-  async promoteUser(sessionId, groupJid, adminJid, targetJid) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.groupHandler.promoteUser(
-        client.sock,
-        groupJid,
-        adminJid,
-        targetJid
-      );
-    } catch (error) {
-      logger.error(`[WhatsApp] Error promoting user: ${error.message}`);
-    }
-  }
-
-  async demoteUser(sessionId, groupJid, adminJid, targetJid) {
-    try {
-      const client = this.clients.get(sessionId);
-      if (!client || client.status !== "open") {
-        throw new Error(`Session ${sessionId} not connected`);
-      }
-
-      return await this.groupHandler.demoteUser(
-        client.sock,
-        groupJid,
-        adminJid,
-        targetJid
-      );
-    } catch (error) {
-      logger.error(`[WhatsApp] Error demoting user: ${error.message}`);
-    }
-  }
-
-  isSessionConnected(sessionId) {
-    const session = this.sessionManager.getSession(sessionId);
-    return session && session.sock && session.sock.user;
-  }
-
-  getConnectedSessions() {
-    const sessionIds = this.sessionManager.getAllSessions();
-    return sessionIds
-      .map((sessionId) => {
-        const client = this.clients.get(sessionId);
-        const session = this.sessionManager.getSession(sessionId);
-        if (session && session.sock && session.sock.user) {
-          return {
-            sessionId,
-            phoneNumber: session.phoneNumber,
-            uptime: client ? Date.now() - client.createdAt : 0,
-          };
-        }
-        return null;
-      })
-      .filter(Boolean);
-  }
-
+  // Cleanup
   async cleanup() {
-    logger.info("[WhatsApp] Cleaning up WhatsApp client...");
-
-    for (const sessionId of this.sessionManager.getAllSessions()) {
-      try {
-        await this.sessionManager.disconnectSession(sessionId);
-      } catch (error) {
-        logger.error(
-          `[WhatsApp] Error cleaning up session ${sessionId}: ${error.message}`
-        );
-      }
+    logger.info("[WhatsApp] Cleaning up WhatsApp client...")
+    
+    if (this.sessionManager) {
+      await this.sessionManager.cleanup()
     }
-
-    this.clients.clear();
-    this.authStates.clear();
-    this.isInitialized = false;
-
-    logger.info("[WhatsApp] WhatsApp client cleanup completed");
+    
+    this.isInitialized = false
+    logger.info("[WhatsApp] WhatsApp client cleanup completed")
   }
 
+  // Stats
   getStats() {
+    const sessionStats = this.sessionManager.getStats ? this.sessionManager.getStats() : {}
+    
     return {
-      totalSessions: this.sessionManager.getAllSessions().length,
-      connectedSessions: this.getConnectedSessions().length,
-      queueStats: messageSender.getQueueStats(),
-      messageHandlerReady: this.messageHandler?.isReady() || false,
+      ...sessionStats,
       uptime: this.isInitialized ? Date.now() - this.initTime : 0,
-    };
-  }
-
-  /**
-   * Get the MessageHandler instance for advanced operations
-   */
-  getMessageHandler() {
-    return this.messageHandler;
-  }
-
-  /**
-   * Check if MessageHandler is ready
-   */
-  isMessageHandlerReady() {
-    return this.messageHandler?.isReady() || false;
+      initialized: this.isInitialized
+    }
   }
 }
-
-// Note: Do not auto-instantiate here to avoid duplicate initialization

@@ -1,27 +1,5 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+Let's fix the telegram part, the button flows and the messages that it's saying, some users are saying they dont really understand the messages at all, rework on the telegram properly, explain their process, removing some unnesscary things like that share contact stuff, it is supposed to be there, just let it explain their process of connecting 
+Also about the sessions, the issue I noticed is that sometimes, it starts up some sessions but it doesnt startup some and it's not like they disconnect at all, let's work on this, maybe it is forgetten to start up some sessions
 
-# dependencies
-/node_modules
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+{"noiseKey":{"private":{"type":"Buffer","data":"oDli4ehWwk4yfZN1apCwjKtsFqiPF2mxbbtPlK19Nks="},"public":{"type":"Buffer","data":"Ivi/dF5vThjuaBttghkHEid4CQ94ZlftEk30I3xGmkc="}},"pairingEphemeralKeyPair":{"private":{"type":"Buffer","data":"GP2CvaWsh7NDq6HPq8SPtr0fnuinOWIKzqmiRY9CNUs="},"public":{"type":"Buffer","data":"ecZOv1+rB4dp22IC58c4DGlLjh61bJNTSRtnq8Xg4H8="}},"signedIdentityKey":{"private":{"type":"Buffer","data":"ULHLcE94RgMc+MXrUlX9FkqBjdDM0ThA2skJZw+dOXg="},"public":{"type":"Buffer","data":"7jVnsB79WvXfQ9FRWRa/vJRIXj6pMWcslmQAhcS8X28="}},"signedPreKey":{"keyPair":{"private":{"type":"Buffer","data":"WNy/d5jbQWzqL45JvNHFoDlLpq9C9nVqJtt/AaSo5G8="},"public":{"type":"Buffer","data":"kfIBQ/htMGCsuM2YUDcocVryjdg4L74Q7n6qwwcXxlk="}},"signature":{"type":"Buffer","data":"CBU9hVE3/k5KZdHsXGeQA2e62HI/wW0x8A/bPsIGrLuNyajk8H+hID6WCzTcK2qGkzsd+pOTj2SiqoRJV8ZZhw=="},"keyId":1},"registrationId":86,"advSecretKey":"tDIpSMfvWuFFM+nET4Y4tcw18chDyXwTdXoiZNo1SYg=","processedHistoryMessages":[{"key":{"remoteJid":"2348058931419@s.whatsapp.net","fromMe":true,"id":"41FBE5AEC423277497945D12407F3CB6"},"messageTimestamp":1757946356},{"key":{"remoteJid":"2348058931419@s.whatsapp.net","fromMe":true,"id":"94E495871E50A3808DB63215A46532F1"},"messageTimestamp":1757946359},{"key":{"remoteJid":"2348058931419@s.whatsapp.net","fromMe":true,"id":"73EE42A2AAE31E73E3D786F76497F9BF"},"messageTimestamp":1757946394}],"nextPreKeyId":31,"firstUnuploadedPreKeyId":31,"accountSyncCounter":1,"accountSettings":{"unarchiveChats":false},"deviceId":"8mpE1KWJSm-Lgd06w3eeRw","phoneId":"194b4841-b8ae-4b62-8aa5-15e433feda29","identityId":{"type":"Buffer","data":"2lCX4JAgHPvslOKkgax/Rv+zmv4="},"registered":true,"backupToken":{"type":"Buffer","data":"K/WPkJQVckZ1LTh150EjgyY0IAs="},"registration":{},"pairingCode":"AWXV6KZK","me":{"id":"2348058931419:61@s.whatsapp.net","name":"twyla","lid":"84357972783284:61@lid"},"account":{"details":"CPas/Y0FEOHDoMYGGAcgACgA","accountSignatureKey":"q7sb/21VLjL2Y4tvYcIIwUZiSVEmeofbRtBFTltIBR8=","accountSignature":"GaRACZZea9r5o/SCNFawqQy8oagOwPH0dksQ9b5GyF6QqaBQayPSHlS9ecoLJBXhXTfNgfdm/NWKAQDX2IY5Dg==","deviceSignature":"02jfpT2DorsuJjalW6OukLmuuRrmSEukXu5GLxxo0iSH8RHZ9o/ZgcP0lDAO+b3YdU3iHKVsXoEYSeFU89N9iQ=="},"signalIdentities":[{"identifier":{"name":"2348058931419:61@s.whatsapp.net","deviceId":0},"identifierKey":{"type":"Buffer","data":"Bau7G/9tVS4y9mOLb2HCCMFGYklRJnqH20bQRU5bSAUf"}}],"platform":"smba","routingInfo":{"type":"Buffer","data":"CAkICA=="},"lastAccountSyncTimestamp":1757946354,"lastPropHash":"3gPUJk","myAppStateKeyId":"AAAAAM3l"}

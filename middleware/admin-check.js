@@ -1,6 +1,3 @@
-// whatsapp/utils/admin-checker.js - Enhanced Admin Checker
-
-import { GroupQueries } from "../../queries/index.js"
 import { logger } from "../../utils/logger.js"
 
 export default class AdminChecker {
@@ -22,7 +19,7 @@ export default class AdminChecker {
    */
   async getGroupMetadata(sock, groupJid) {
     const cacheKey = `metadata_${groupJid}`
-    
+
     if (this.cache.has(cacheKey)) {
       const cached = this.cache.get(cacheKey)
       if (Date.now() - cached.timestamp < this.cacheTimeout) {
@@ -35,7 +32,7 @@ export default class AdminChecker {
       const metadata = await sock.groupMetadata(groupJid)
       this.cache.set(cacheKey, {
         data: metadata,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       })
       return metadata
     } catch (error) {
@@ -49,11 +46,11 @@ export default class AdminChecker {
    */
   getGroupAdmins(participants) {
     if (!Array.isArray(participants)) return []
-    
+
     return participants
-      .filter(p => p.admin === "admin" || p.admin === "superadmin")
-      .map(p => this.normalizeJid(p.id) || this.normalizeJid(p.jid))
-      .filter(jid => jid) // Remove empty JIDs
+      .filter((p) => p.admin === "admin" || p.admin === "superadmin")
+      .map((p) => this.normalizeJid(p.jid))
+      .filter((jid) => jid) // Remove empty JIDs
   }
 
   /**
@@ -63,7 +60,7 @@ export default class AdminChecker {
     try {
       const normalizedUserJid = this.normalizeJid(userJid)
       const groupMetadata = await this.getGroupMetadata(sock, groupJid)
-      
+
       if (!groupMetadata || !groupMetadata.participants) {
         logger.warn(`[AdminChecker] No group metadata or participants for ${groupJid}`)
         return false
@@ -74,16 +71,13 @@ export default class AdminChecker {
       const isAdminByList = groupAdmins.includes(normalizedUserJid)
 
       // Method 2: Direct participant lookup (more reliable)
-      const userParticipant = groupMetadata.participants.find(p => {
-        const participantId = this.normalizeJid(p.jid)
+      const userParticipant = groupMetadata.participants.find((p) => {
         const participantJid = this.normalizeJid(p.jid)
-        return participantId === normalizedUserJid || participantJid === normalizedUserJid
+        return participantJid === normalizedUserJid
       })
 
-      const isReallyAdmin = userParticipant && (
-        userParticipant.admin === "admin" || 
-        userParticipant.admin === "superadmin"
-      )
+      const isReallyAdmin =
+        userParticipant && (userParticipant.admin === "admin" || userParticipant.admin === "superadmin")
 
       // Method 3: Check if user is group owner
       const groupOwner = this.normalizeJid(groupMetadata.owner || "")
@@ -93,7 +87,6 @@ export default class AdminChecker {
 
       logger.debug(`[AdminChecker] Admin check for ${normalizedUserJid} in ${groupJid}: ${result}`)
       return result
-
     } catch (error) {
       logger.error(`[AdminChecker] Error checking admin status: ${error.message}`)
       return false
@@ -105,29 +98,34 @@ export default class AdminChecker {
    */
   async isBotAdmin(sock, groupJid) {
     try {
-      const botNumber = this.normalizeJid((sock.user?.id || "").split(":")[0])
+      const rawBotId = sock.user?.id || ""
+      const botNumber = this.normalizeJid(rawBotId.split(":")[0])
+
+      console.log("[v0] Bot JID Debug - Raw ID:", rawBotId)
+      console.log("[v0] Bot JID Debug - After split:", rawBotId.split(":")[0])
+      console.log("[v0] Bot JID Debug - Normalized:", botNumber)
+
       const groupMetadata = await this.getGroupMetadata(sock, groupJid)
-      
+
       if (!groupMetadata || !groupMetadata.participants) {
         logger.warn(`[AdminChecker] No group metadata for bot admin check in ${groupJid}`)
         return false
       }
 
       // Robust bot admin check
-      const isBotAdmin = groupMetadata.participants.some(p => {
-        const participantId = this.normalizeJid(p.jid)
+      const isBotAdmin = groupMetadata.participants.some((p) => {
         const participantJid = this.normalizeJid(p.jid)
         const botJid = this.normalizeJid(botNumber)
-        
-        return (
-          (participantId === botJid || participantJid === botJid) && 
-          (p.admin === "admin" || p.admin === "superadmin")
-        )
+
+        console.log("[v0] Bot Admin Check - Participant:", participantJid, "Admin:", p.admin)
+        console.log("[v0] Bot Admin Check - Bot JID:", botJid)
+        console.log("[v0] Bot Admin Check - Match:", participantJid === botJid)
+
+        return participantJid === botJid && (p.admin === "admin" || p.admin === "superadmin")
       })
 
       logger.debug(`[AdminChecker] Bot admin status in ${groupJid}: ${isBotAdmin}`)
       return isBotAdmin
-
     } catch (error) {
       logger.error(`[AdminChecker] Error checking bot admin status: ${error.message}`)
       return false
@@ -140,7 +138,7 @@ export default class AdminChecker {
   async getGroupInfo(sock, groupJid, userJid = null) {
     try {
       const groupMetadata = await this.getGroupMetadata(sock, groupJid)
-      
+
       if (!groupMetadata) {
         return {
           groupName: "",
@@ -150,7 +148,7 @@ export default class AdminChecker {
           botIsAdmin: false,
           userIsAdmin: false,
           userIsOwner: false,
-          metadata: null
+          metadata: null,
         }
       }
 
@@ -158,18 +156,19 @@ export default class AdminChecker {
       const participants = groupMetadata.participants || []
       const groupAdmins = this.getGroupAdmins(participants)
       const groupOwner = this.normalizeJid(groupMetadata.owner || "")
-      
+
       // Bot admin status
-      const botNumber = this.normalizeJid((sock.user?.id || "").split(":")[0])
-      const botIsAdmin = participants.some(p => {
-        const participantId = this.normalizeJid(p.id)
+      const rawBotId = sock.user?.id || ""
+      const botNumber = this.normalizeJid(rawBotId.split(":")[0])
+
+      console.log("[v0] GetGroupInfo Bot JID Debug - Raw ID:", rawBotId)
+      console.log("[v0] GetGroupInfo Bot JID Debug - Normalized:", botNumber)
+
+      const botIsAdmin = participants.some((p) => {
         const participantJid = this.normalizeJid(p.jid)
         const botJid = this.normalizeJid(botNumber)
-        
-        return (
-          (participantId === botJid || participantJid === botJid) && 
-          (p.admin === "admin" || p.admin === "superadmin")
-        )
+
+        return participantJid === botJid && (p.admin === "admin" || p.admin === "superadmin")
       })
 
       let userIsAdmin = false
@@ -177,23 +176,17 @@ export default class AdminChecker {
 
       if (userJid) {
         const normalizedUserJid = this.normalizeJid(userJid)
-        
+
         // Check if user is admin
-        const userParticipant = participants.find(p => {
-          const participantId = this.normalizeJid(p.jid)
+        const userParticipant = participants.find((p) => {
           const participantJid = this.normalizeJid(p.jid)
-          return participantId === normalizedUserJid || participantJid === normalizedUserJid
+          return participantJid === normalizedUserJid
         })
 
-        userIsAdmin = userParticipant && (
-          userParticipant.admin === "admin" || 
-          userParticipant.admin === "superadmin"
-        )
+        userIsAdmin = userParticipant && (userParticipant.admin === "admin" || userParticipant.admin === "superadmin")
 
         // Check if user is owner (fallback to admin list if owner not set)
-        userIsOwner = groupOwner ? 
-          groupOwner === normalizedUserJid : 
-          groupAdmins.includes(normalizedUserJid)
+        userIsOwner = groupOwner ? groupOwner === normalizedUserJid : groupAdmins.includes(normalizedUserJid)
       }
 
       return {
@@ -204,9 +197,8 @@ export default class AdminChecker {
         botIsAdmin,
         userIsAdmin: userIsAdmin || userIsOwner, // Owner is also considered admin
         userIsOwner,
-        metadata: groupMetadata
+        metadata: groupMetadata,
       }
-
     } catch (error) {
       logger.error(`[AdminChecker] Error getting group info: ${error.message}`)
       return {
@@ -217,7 +209,7 @@ export default class AdminChecker {
         botIsAdmin: false,
         userIsAdmin: false,
         userIsOwner: false,
-        metadata: null
+        metadata: null,
       }
     }
   }
@@ -229,14 +221,13 @@ export default class AdminChecker {
     try {
       const groupInfo = await this.getGroupInfo(sock, groupJid, userJid)
       const normalizedUserJid = this.normalizeJid(userJid)
-      
+
       // Check if user is bot itself
       const botNumber = this.normalizeJid((sock.user?.id || "").split(":")[0])
       const isBotSender = normalizedUserJid === botNumber
 
       // Check if user is system creator/owner
-      const isCreator = includeCreator && creatorJid && 
-        this.normalizeJid(creatorJid) === normalizedUserJid
+      const isCreator = includeCreator && creatorJid && this.normalizeJid(creatorJid) === normalizedUserJid
 
       const hasPermission = isCreator || groupInfo.userIsAdmin || groupInfo.userIsOwner || isBotSender
 
@@ -247,9 +238,8 @@ export default class AdminChecker {
         isAdmin: groupInfo.userIsAdmin,
         isOwner: groupInfo.userIsOwner,
         isBotSender,
-        groupInfo
+        groupInfo,
       }
-
     } catch (error) {
       logger.error(`[AdminChecker] Error checking permissions: ${error.message}`)
       return {
@@ -258,7 +248,7 @@ export default class AdminChecker {
         isAdmin: false,
         isOwner: false,
         isBotSender: false,
-        groupInfo: null
+        groupInfo: null,
       }
     }
   }
@@ -269,24 +259,23 @@ export default class AdminChecker {
   async canPerformAdminActions(sock, groupJid, userJid) {
     try {
       const groupInfo = await this.getGroupInfo(sock, groupJid, userJid)
-      
+
       const userCanAct = groupInfo.userIsAdmin || groupInfo.userIsOwner
       const botCanAct = groupInfo.botIsAdmin
-      
+
       return {
         canAct: userCanAct && botCanAct,
         userIsAdmin: userCanAct,
         botIsAdmin: botCanAct,
-        reason: !userCanAct ? "user_not_admin" : !botCanAct ? "bot_not_admin" : "ok"
+        reason: !userCanAct ? "user_not_admin" : !botCanAct ? "bot_not_admin" : "ok",
       }
-
     } catch (error) {
       logger.error(`[AdminChecker] Error checking admin action permissions: ${error.message}`)
       return {
         canAct: false,
         userIsAdmin: false,
         botIsAdmin: false,
-        reason: "error"
+        reason: "error",
       }
     }
   }
@@ -310,7 +299,7 @@ export default class AdminChecker {
     return {
       size: this.cache.size,
       timeout: this.cacheTimeout,
-      keys: Array.from(this.cache.keys())
+      keys: Array.from(this.cache.keys()),
     }
   }
 }
