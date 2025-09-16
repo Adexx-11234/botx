@@ -77,7 +77,7 @@ class WhatsAppSessionManager {
   }
 
   async createSession(userId, phoneNumber = null, callbacks = {}, isReconnect = false) {
-    const sessionId = `session_${userId}`
+    const sessionId = userId.startsWith('session_') ? userId : `session_${userId}`
     
     // Prevent duplicate initialization
     if (this.initializingSessions.has(sessionId)) {
@@ -190,7 +190,7 @@ class WhatsAppSessionManager {
 
   async _handleConnectionUpdate(sessionId, update, callbacks) {
     const { connection, lastDisconnect, qr } = update
-    const userId = sessionId.replace('session_', '')
+    const userId = sessionId.replace('session_', '').replace('web_', '')
     const sock = this.activeSockets.get(sessionId)
 
     try {
@@ -224,12 +224,14 @@ class WhatsAppSessionManager {
         }
 
         // Notify telegram bot (only once)
-        if (this.telegramBot && phoneNumber && callbacks?.onConnected) {
-          this.telegramBot.sendConnectionSuccess(userId, `+${phoneNumber}`)
-            .catch(err => logger.error(`Telegram notification failed: ${err.message}`))
-          
-          callbacks.onConnected(sock)
-        }
+        if (this.telegramBot && phoneNumber && callbacks?.onConnected && !sessionId.includes('web_')) {
+        this.telegramBot.sendConnectionSuccess(userId, `+${phoneNumber}`)
+          .catch(err => logger.error(`Telegram notification failed: ${err.message}`))
+      }
+      
+      if (callbacks?.onConnected) {
+        callbacks.onConnected(sock)
+      }
 
       } else if (connection === 'close') {
         const reason = lastDisconnect?.error?.message || 'Unknown'
@@ -389,7 +391,7 @@ class WhatsAppSessionManager {
   }
 
   async performCompleteUserCleanup(sessionId) {
-    const userId = sessionId.replace('session_', '')
+    const userId = sessionId.replace('session_', '').replace('web_', '')
     const results = { socket: false, database: false, authState: false }
 
     try {
@@ -469,13 +471,13 @@ class WhatsAppSessionManager {
       }
 
       // Notify telegram
-      if (this.telegramBot) {
-        try {
-          await this.telegramBot.sendMessage(userId, "🔴 WhatsApp session disconnected and cleaned up.")
-        } catch (error) {
-          // Silent fail
-        }
+      if (this.telegramBot && !sessionId.includes('web_')) {
+      try {
+        await this.telegramBot.sendMessage(userId, "🔴 WhatsApp session disconnected and cleaned up.")
+      } catch (error) {
+        // Silent fail for telegram notifications
       }
+    }
 
       logger.info(`Complete cleanup for ${sessionId}:`, results)
       return results

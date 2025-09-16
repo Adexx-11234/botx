@@ -355,48 +355,46 @@ export class WebInterface {
   }
 
   async generatePairingCode(userId, phoneNumber) {
-    try {
-      const sessionId = `session_web_${userId}`
-      
-      logger.info(`Generating pairing code for ${phoneNumber} (web user: ${userId})`)
+  try {
+    const sessionId = `session_web_${userId}`
+    
+    logger.info(`Generating pairing code for ${phoneNumber} (web user: ${userId})`)
 
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Code generation timeout'))
-        }, 45000)
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Code generation timeout'))
+      }, 45000)
 
-        // Use the telegram_id (negative for web users) as the userId for session creation
-        const user = { telegram_id: -userId } // Convert to negative to match our web user pattern
-        
-        this.sessionManager.createSession(userId, phoneNumber, {
-          onPairingCode: (code) => {
-            clearTimeout(timeout)
-            logger.info(`Pairing code generated for web user ${userId}: ${code}`)
-            resolve({ success: true, code })
-          },
-          
-          onConnected: async (socket) => {
-            logger.info(`WhatsApp connection successful for web user ${userId}: ${phoneNumber}`)
-            this.pendingConnections.delete(sessionId)
-          },
-          
-          onError: (error) => {
-            clearTimeout(timeout)
-            logger.error('Web session creation error:', error)
-            resolve({ success: false, error: error.message })
-          }
-        }).catch(error => {
+      // Use the user ID directly for web sessions
+      this.sessionManager.createSession(sessionId, phoneNumber, {
+        onPairingCode: (code) => {
           clearTimeout(timeout)
-          logger.error('Web session creation failed:', error)
+          logger.info(`Pairing code generated for web user ${userId}: ${code}`)
+          resolve({ success: true, code })
+        },
+        
+        onConnected: async (sock) => {
+          logger.info(`WhatsApp connection successful for web user ${userId}: ${phoneNumber}`)
+          this.pendingConnections.delete(sessionId)
+        },
+        
+        onError: (error) => {
+          clearTimeout(timeout)
+          logger.error('Web session creation error:', error)
           resolve({ success: false, error: error.message })
-        })
+        }
+      }).catch(error => {
+        clearTimeout(timeout)
+        logger.error('Web session creation failed:', error)
+        resolve({ success: false, error: error.message })
       })
+    })
 
-    } catch (error) {
-      logger.error('Web pairing code generation error:', error)
-      return { success: false, error: error.message }
-    }
+  } catch (error) {
+    logger.error('Web pairing code generation error:', error)
+    return { success: false, error: error.message }
   }
+}
 
   async handleDisconnect(req, res) {
     try {
