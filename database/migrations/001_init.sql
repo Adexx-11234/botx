@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS sessions (
           password_hash VARCHAR(255) NOT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+        );
 
 -- Comment for session_data column
 COMMENT ON COLUMN sessions.session_data IS 'Encrypted session credentials (base64 encoded) containing authentication data, supports both text and numeric values after encryption';
