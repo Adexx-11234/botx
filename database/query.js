@@ -1046,15 +1046,12 @@ export const AnalyticsQueries = {
 
 export const UserQueries = {
   /**
-   * Get user by Telegram ID
+   * Get user by Telegram ID - Fixed to use only users table
    */
   async getUserByTelegramId(telegramId) {
     try {
       const result = await queryManager.execute(
-        `SELECT u.*, s.session_id, s.phone_number as user_jid 
-         FROM users u 
-         LEFT JOIN sessions s ON u.id = s.user_id AND s.is_connected = true
-         WHERE u.telegram_id = $1`,
+        `SELECT * FROM users WHERE telegram_id = $1`,
         [telegramId],
       )
       return result.rows[0] || null
@@ -1065,21 +1062,86 @@ export const UserQueries = {
   },
 
   /**
-   * Get user by Session ID
+   * Get user by Session ID - Extract telegram_id from session and query users table
    */
   async getUserBySessionId(sessionId) {
     try {
+      // Extract telegram_id from session_id format: session_{telegram_id}
+      const sessionIdMatch = sessionId.match(/session_(-?\d+)/)
+      if (!sessionIdMatch) {
+        logger.warn(`[UserQueries] Invalid session ID format: ${sessionId}`)
+        return null
+      }
+      
+      const telegramId = Number.parseInt(sessionIdMatch[1])
+      
       const result = await queryManager.execute(
-        `SELECT u.*, s.session_id, s.phone_number as user_jid, s.is_connected
-         FROM users u 
-         INNER JOIN sessions s ON u.id = s.user_id
-         WHERE s.session_id = $1`,
-        [sessionId],
+        `SELECT * FROM users WHERE telegram_id = $1`,
+        [telegramId],
       )
       return result.rows[0] || null
     } catch (error) {
       logger.error(`[UserQueries] Error getting user by session_id ${sessionId}: ${error.message}`)
       return null
+    }
+  },
+
+  /**
+   * Create user for negative (web) sessions
+   */
+  async createWebUser(telegramId, phoneNumber = null) {
+    try {
+      const result = await queryManager.execute(
+        `INSERT INTO users (telegram_id, phone_number, is_active, created_at, updated_at)
+         VALUES ($1, $2, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT (telegram_id) 
+         DO UPDATE SET 
+           phone_number = COALESCE($2, users.phone_number),
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING *`,
+        [telegramId, phoneNumber],
+      )
+      
+      logger.info(`[UserQueries] Created/updated web user with telegram_id: ${telegramId}`)
+      return result.rows[0]
+    } catch (error) {
+      logger.error(`[UserQueries] Error creating web user: ${error.message}`)
+      throw error
+    }
+  },
+
+  /**
+   * Ensure user exists in users table (for any telegram_id including negative ones)
+   */
+  async ensureUserInUsersTable(telegramId, userData = {}) {
+    try {
+      const result = await queryManager.execute(
+        `INSERT INTO users (telegram_id, username, first_name, last_name, phone_number, is_active, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, COALESCE($6, true), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT (telegram_id) 
+         DO UPDATE SET 
+           username = COALESCE($2, users.username),
+           first_name = COALESCE($3, users.first_name),
+           last_name = COALESCE($4, users.last_name),
+           phone_number = COALESCE($5, users.phone_number),
+           is_active = COALESCE($6, users.is_active),
+           updated_at = CURRENT_TIMESTAMP
+         RETURNING *`,
+        [
+          telegramId,
+          userData.username || null,
+          userData.first_name || null,
+          userData.last_name || null,
+          userData.phone_number || null,
+          userData.is_active
+        ],
+      )
+      
+      logger.debug(`[UserQueries] Ensured user exists in users table: telegram_id ${telegramId}`)
+      return result.rows[0]
+    } catch (error) {
+      logger.error(`[UserQueries] Error ensuring user exists in users table: ${error.message}`)
+      throw error
     }
   },
 
@@ -1253,7 +1315,8 @@ export const UserQueries = {
       return []
     }
   },
-  async getAntiDelteUsers() {
+
+  async getAntiDeleteUsers() {
     try {
       const result = await queryManager.execute(
         `SELECT wu.jid, wu.telegram_id 
@@ -1276,7 +1339,6 @@ export const UserQueries = {
       return []
     }
   },
-
 
   /**
    * Check if user has anti-deleted enabled
@@ -1366,7 +1428,7 @@ export const UserQueries = {
   },
 
   /**
-   * Ensure user exists in database
+   * Ensure user exists in database (whatsapp_users table)
    */
   async ensureUserExists(userJid, userName = null) {
     if (!userJid) {

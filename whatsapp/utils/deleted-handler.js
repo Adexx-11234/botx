@@ -261,33 +261,46 @@ export class AntiDeletedHandler {
   }
 
   static findSessionByNormalizedJid(sessionManager, targetJid) {
-    const normalizedTarget = this.normalizeJid(targetJid)
-    
-    let session = sessionManager.getSessionByWhatsAppJid(targetJid)
-    if (session) {
+  const normalizedTarget = this.normalizeJid(targetJid)
+  
+  // First try exact match
+  let sessionResult = sessionManager.getSessionByWhatsAppJid(targetJid)
+  if (sessionResult) {
+    // Handle both wrapped and direct socket returns
+    const sock = sessionResult.sock || sessionResult
+    if (sock && typeof sock.sendMessage === 'function') {
       this.log(`Found exact session match for: ${targetJid}`, "debug")
-      return session
+      return sock
     }
+  }
 
-    session = sessionManager.getSessionByWhatsAppJid(normalizedTarget)
-    if (session) {
+  // Try normalized match
+  sessionResult = sessionManager.getSessionByWhatsAppJid(normalizedTarget)
+  if (sessionResult) {
+    const sock = sessionResult.sock || sessionResult
+    if (sock && typeof sock.sendMessage === 'function') {
       this.log(`Found normalized session match for: ${normalizedTarget}`, "debug")
-      return session
+      return sock
     }
+  }
 
-    if (sessionManager.sessions && typeof sessionManager.sessions === 'object') {
-      for (const [sessionJid, sessionData] of Object.entries(sessionManager.sessions)) {
-        const normalizedSessionJid = this.normalizeJid(sessionJid)
-        if (normalizedSessionJid === normalizedTarget) {
-          this.log(`Found matching session via manual search: ${sessionJid} -> ${normalizedTarget}`, "debug")
-          return sessionData
+  // If activeSockets exists, try manual search
+  if (sessionManager.activeSockets && typeof sessionManager.activeSockets === 'object') {
+    for (const [sessionId, sock] of sessionManager.activeSockets) {
+      if (sock?.user?.id) {
+        const sessionPhone = sock.user.id.split("@")[0].split(":")[0]
+        const targetPhone = normalizedTarget.split("@")[0]
+        if (sessionPhone === targetPhone && typeof sock.sendMessage === 'function') {
+          this.log(`Found matching session via manual search: ${sessionId} -> ${normalizedTarget}`, "debug")
+          return sock
         }
       }
     }
-
-    this.log(`No session found for JID: ${targetJid} (normalized: ${normalizedTarget})`, "warning")
-    return null
   }
+
+  this.log(`No session found for JID: ${targetJid} (normalized: ${normalizedTarget})`, "warning")
+  return null
+}
 
   /**
    * ===========================================

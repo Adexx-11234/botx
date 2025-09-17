@@ -571,7 +571,7 @@ class WhatsAppSessionManager {
         const sessionPhone = sock.user.id.split('@')[0]
         if (sessionPhone === phoneNumber) {
           await this.storage.updateSession(sessionId, { lastActivity: new Date() })
-          return sock
+          return { sock, sessionId }
         }
       }
     }

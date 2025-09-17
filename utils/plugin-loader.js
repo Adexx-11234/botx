@@ -304,62 +304,64 @@ class PluginLoader {
     return pluginId ? this.plugins.get(pluginId) || null : null
   }
 
-  async executeCommand(sock, sessionId, commandName, args, m) {
-    try {
-      const plugin = this.findCommand(commandName)
-      if (!plugin) {
-        // Silently fail - no error messages for non-existent commands
-        return { success: false, silent: true }
-      }
-        
-      // Ensure pushName is available
-      if (!m.pushName) {
-        m.pushName = await this.extractPushName(sock, m)
-      }
-        
-      // Check if sender is bot owner
-      const isCreator = this.checkIsBotOwner(sock, m.sender)
-      
-      // Enhance message object
-      const enhancedM = {
-        ...m,
-        chat: m.chat || m.key?.remoteJid || m.from,
-        sender: m.sender || m.key?.participant || m.from,
-        isCreator,
-        isGroup: m.isGroup || (m.chat && m.chat.endsWith('@g.us')),
-        isAdmin: m.isAdmin || false,
-        isBotAdmin: m.isBotAdmin || false,
-        groupMetadata: m.groupMetadata || null,
-        participants: m.participants || null,
-        sessionContext: m.sessionContext || { telegram_id: "Unknown", session_id: sessionId },
-        sessionId,
-        reply: m.reply
-      }
+async executeCommand(sock, sessionId, commandName, args, m) {
+  try {
+    const plugin = this.findCommand(commandName)
+    if (!plugin) {
+      // Silently fail - no error messages for non-existent commands
+      return { success: false, silent: true }
+    }
 
-      // Check permissions
-      const permissionCheck = await this.checkPluginPermissions(sock, plugin, enhancedM)
-      if (!permissionCheck.allowed) {
-        return {
-          success: false,
-          error: permissionCheck.message
-        }
-      }
-
-      // Execute plugin
-      const result = await this.executePluginWithFallback(sock, sessionId, args, enhancedM, plugin)
+    // Check grouponly restrictions BEFORE executing any command
       
-      return {
-        success: true,
-        result: result
-      }
-    } catch (error) {
-      log.error(`Error executing command ${commandName}:`, error)
+    // Ensure pushName is available
+    if (!m.pushName) {
+      m.pushName = await this.extractPushName(sock, m)
+    }
+      
+    // Check if sender is bot owner
+    const isCreator = this.checkIsBotOwner(sock, m.sender)
+    
+    // Enhance message object
+    const enhancedM = {
+      ...m,
+      chat: m.chat || m.key?.remoteJid || m.from,
+      sender: m.sender || m.key?.participant || m.from,
+      isCreator,
+      isGroup: m.isGroup || (m.chat && m.chat.endsWith('@g.us')),
+      isAdmin: m.isAdmin || false,
+      isBotAdmin: m.isBotAdmin || false,
+      groupMetadata: m.groupMetadata || null,
+      participants: m.participants || null,
+      sessionContext: m.sessionContext || { telegram_id: "Unknown", session_id: sessionId },
+      sessionId,
+      reply: m.reply
+    }
+
+    // Check permissions
+    const permissionCheck = await this.checkPluginPermissions(sock, plugin, enhancedM)
+    if (!permissionCheck.allowed) {
       return {
         success: false,
-        error: `Error executing command: ${error.message}`
+        error: permissionCheck.message
       }
     }
+
+    // Execute plugin
+    const result = await this.executePluginWithFallback(sock, sessionId, args, enhancedM, plugin)
+    
+    return {
+      success: true,
+      result: result
+    }
+  } catch (error) {
+    log.error(`Error executing command ${commandName}:`, error)
+    return {
+      success: false,
+      error: `Error executing command: ${error.message}`
+    }
   }
+}
 
   async executePluginWithFallback(sock, sessionId, args, m, plugin) {
     try {
@@ -535,28 +537,28 @@ class PluginLoader {
   }
 
   async processAntiPlugins(sock, sessionId, m) {
-    for (const plugin of this.antiPlugins.values()) {
-      try {
-        let enabled = true
-        if (typeof plugin.isEnabled === "function") {
-          enabled = await plugin.isEnabled(m.chat)
-        }
-        if (!enabled) continue
-
-        let shouldProcess = true
-        if (typeof plugin.shouldProcess === "function") {
-          shouldProcess = await plugin.shouldProcess(m)
-        }
-        if (!shouldProcess) continue
-
-        if (typeof plugin.processMessage === "function") {
-          await plugin.processMessage(sock, sessionId, m)
-        }
-      } catch (pluginErr) {
-        log.warn(`Anti-plugin error in ${plugin?.name || "unknown"}: ${pluginErr.message}`)
+  for (const plugin of this.antiPlugins.values()) {
+    try {
+      let enabled = true
+      if (typeof plugin.isEnabled === "function") {
+        enabled = await plugin.isEnabled(m.chat)
       }
+      if (!enabled) continue
+
+      let shouldProcess = true
+      if (typeof plugin.shouldProcess === "function") {
+        shouldProcess = await plugin.shouldProcess(sock, m)  // Add sock parameter here
+      }
+      if (!shouldProcess) continue
+
+      if (typeof plugin.processMessage === "function") {
+        await plugin.processMessage(sock, sessionId, m)
+      }
+    } catch (pluginErr) {
+      log.warn(`Anti-plugin error in ${plugin?.name || "unknown"}: ${pluginErr.message}`)
     }
   }
+}
 
   async shutdown() {
     log.info("Shutting down plugin loader...")

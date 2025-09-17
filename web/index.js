@@ -471,7 +471,7 @@ export class WebInterface {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>WhatsApp Web Pairing</title>
+        <title>Paul WhatsApp Web Pairing</title>
         <link rel="stylesheet" href="/static/style.css">
       </head>
       <body>
@@ -505,7 +505,7 @@ export class WebInterface {
     return `
       <div class="container">
         <div class="hero">
-          <h1>WhatsApp Web Pairing</h1>
+          <h1>Paul WhatsApp Web Pairing</h1>
           <p>Connect your WhatsApp account securely through our web interface</p>
           <div class="hero-buttons">
             <a href="/login" class="btn btn-primary">Login</a>

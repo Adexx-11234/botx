@@ -27,49 +27,88 @@ export class MessageProcessor {
       if (!pluginLoader.isInitialized) {
         await pluginLoader.loadPlugins()
       }
+      await this.initializeExistingSessions()
       this.isInitialized = true
     }
   }
 
-
-  async processMessage(sock, sessionId, m, prefix) {
+  async initializeExistingSessions() {
     try {
-      await this.initialize()
-
-      // Get session context
-      const sessionContext = await this.getSessionContext(sessionId)
-
-      // Serialize message with error handling
-      m = serializeMessage(sock, m)
-
-      // Set context
-      m.sessionContext = sessionContext
-      m.sessionId = sessionId
-
-      // Extract contact info
-      await this.contactManager.extractPushName(sock, m)
-      m.quoted = this.extractQuotedMessage(m)
-
-      // Persist and set admin status
-      await this.messagePersistence.persistMessage(sessionId, sock, m)
-      await this.adminManager.setAdminStatus(sock, m)
-
-      // Process anti-plugins first
-      await this.processAllAntiPlugins(sock, sessionId, m)
-
-      if (m._wasDeletedByAntiPlugin) {
-        await this.messageLogger.logEnhancedMessageEntry(sock, sessionId, m)
-        return { processed: true, deletedByAntiPlugin: true }
+      const { sessionManager } = await import("../sessions/session-manager.js")
+      const result = await sessionManager.initializeExistingSessions({
+        onConnected: (sock) => logger.info(`[MessageProcessor] Session reconnected: ${sock.user?.id}`),
+        onError: (error) => logger.error(`[MessageProcessor] Session error: ${error.message}`)
+      })
+      if (result.initialized > 0) {
+        logger.info(`[MessageProcessor] Restored ${result.initialized} sessions`)
       }
+    } catch (error) {
+      logger.error(`[MessageProcessor] Failed to initialize sessions: ${error.message}`)
+    }
+  }
 
-      const isCommand = m.body && m.body.startsWith(prefix)
-      m.isCommand = isCommand
+ async processMessage(sock, sessionId, m, prefix) {
+  try {
+    await this.initialize()
 
-      if (isCommand) {
-        this.parseCommand(m, prefix)
+    // Add null/undefined check for message object
+    if (!m || !m.message) {
+      logger.warn(`[MessageProcessor] Invalid message object received for session ${sessionId}`)
+      return { processed: false, error: "Invalid message object" }
+    }
+
+    // Get session context
+    const sessionContext = await this.getSessionContext(sessionId)
+
+    // Try serialization, but continue without it if it fails
+    let serializedMessage = m
+    try {
+      serializedMessage = serializeMessage(sock, m)
+      if (!serializedMessage) {
+        logger.warn(`[MessageProcessor] Serialization returned null, using original message`)
+        serializedMessage = m
       }
+    } catch (serializeError) {
+      logger.warn(`[MessageProcessor] Message serialization failed, using original: ${serializeError.message}`)
+      serializedMessage = m
+    }
 
+    // Use the serialized message if successful, otherwise use original
+    m = serializedMessage
+
+    // Set context
+    m.sessionContext = sessionContext
+    m.sessionId = sessionId
+
+    // Extract contact info
+    await this.contactManager.extractPushName(sock, m)
+    m.quoted = this.extractQuotedMessage(m)
+
+    // Persist and set admin status
+    await this.messagePersistence.persistMessage(sessionId, sock, m)
+    await this.adminManager.setAdminStatus(sock, m)
+
+    // Process anti-plugins first
+    await this.processAllAntiPlugins(sock, sessionId, m)
+
+    if (m._wasDeletedByAntiPlugin) {
       await this.messageLogger.logEnhancedMessageEntry(sock, sessionId, m)
+      return { processed: true, deletedByAntiPlugin: true }
+    }
+
+    // Handle body extraction manually if serialization failed
+    if (!m.body) {
+      m.body = this.extractMessageBody(m)
+    }
+
+    const isCommand = m.body && m.body.startsWith(prefix)
+    m.isCommand = isCommand
+
+    if (isCommand) {
+      this.parseCommand(m, prefix)
+    }
+
+    await this.messageLogger.logEnhancedMessageEntry(sock, sessionId, m)
 
     // Handle all types of button/interactive responses
     if (m.message?.listResponseMessage) {
@@ -83,60 +122,110 @@ export class MessageProcessor {
       return await this.handleInteractiveResponse(sock, sessionId, m, prefix);
     }
 
-      // Execute command
-      if (m.isCommand && m.body && !m._wasDeletedByAntiPlugin) {
-        this.messageStats.commands++
-        return await this.handleCommand(sock, sessionId, m)
-      }
-
-      this.messageStats.processed++
-      return { processed: true }
-    } catch (error) {
-      logger.error(`[MessageProcessor] Error processing message: ${error.message}`)
-      this.messageStats.errors++
-      return { error: error.message }
+    // Execute command
+    if (m.isCommand && m.body && !m._wasDeletedByAntiPlugin) {
+      this.messageStats.commands++
+      return await this.handleCommand(sock, sessionId, m)
     }
+
+    this.messageStats.processed++
+    return { processed: true }
+  } catch (error) {
+    logger.error(`[MessageProcessor] Error processing message: ${error.message}`)
+    this.messageStats.errors++
+    return { error: error.message }
   }
+}
 
-  async getSessionContext(sessionId) {
-    try {
-      const { UserQueries } = await import("../../database/query.js")
-      const user = await UserQueries.getUserBySessionId(sessionId)
-
-      if (user?.telegram_id) {
+// Add this helper method to extract message body without full serialization
+extractMessageBody(m) {
+  if (!m.message) return ""
+  
+  return m.message.conversation ||
+         m.message.extendedTextMessage?.text ||
+         m.message.imageMessage?.caption ||
+         m.message.videoMessage?.caption ||
+         m.message.documentMessage?.caption ||
+         (m.message.listResponseMessage && m.message.listResponseMessage.singleSelectReply?.selectedRowId) ||
+         (m.message.buttonsResponseMessage && m.message.buttonsResponseMessage.selectedButtonId) ||
+         (m.message.templateButtonReplyMessage && m.message.templateButtonReplyMessage.selectedId) ||
+         ""
+}
+    
+ async getSessionContext(sessionId) {
+  try {
+    const { UserQueries } = await import("../../database/query.js")
+    
+    // Handle both positive and negative session IDs from session name
+    const sessionIdMatch = sessionId.match(/session_(-?\d+)/)
+    if (sessionIdMatch) {
+      const telegramId = Number.parseInt(sessionIdMatch[1])
+      
+      // Try to get user by telegram_id from users table
+      let user = await UserQueries.getUserByTelegramId(telegramId)
+      
+      // If user doesn't exist, create them (especially for negative IDs - web sessions)
+      if (!user) {
+        try {
+          user = await UserQueries.ensureUserInUsersTable(telegramId, {
+            is_active: true
+          })
+        } catch (error) {
+          logger.warn(`[MessageProcessor] Failed to create user for telegram_id ${telegramId}: ${error.message}`)
+        }
+      }
+      
+      if (user) {
         return {
           telegram_id: user.telegram_id,
           session_id: sessionId,
           username: user.username || null,
           phone_number: user.phone_number || null,
+          id: user.id,
+          isWebSession: telegramId < 0
         }
       }
-
-      const sessionIdMatch = sessionId.match(/session_(\d+)/)
-      if (sessionIdMatch) {
+      
+      // For negative IDs (web-paired sessions), mark as web session
+      if (telegramId < 0) {
         return {
-          telegram_id: Number.parseInt(sessionIdMatch[1]),
+          telegram_id: "Web Session",
           session_id: sessionId,
           username: null,
           phone_number: null,
+          isWebSession: true,
+          originalId: telegramId,
+          id: telegramId
         }
       }
-
+      
       return {
-        telegram_id: "Unknown",
+        telegram_id: telegramId,
         session_id: sessionId,
         username: null,
         phone_number: null,
-      }
-    } catch (error) {
-      return {
-        telegram_id: "Unknown",
-        session_id: sessionId,
-        username: null,
-        phone_number: null,
+        id: telegramId
       }
     }
+
+    return {
+      telegram_id: "Unknown",
+      session_id: sessionId,
+      username: null,
+      phone_number: null,
+      id: null
+    }
+  } catch (error) {
+    logger.error(`[MessageProcessor] Error in getSessionContext: ${error.message}`)
+    return {
+      telegram_id: "Unknown",
+      session_id: sessionId,
+      username: null,
+      phone_number: null,
+      id: null
+    }
   }
+}
 
   parseCommand(m, prefix) {
     const commandText = m.body.slice(prefix.length).trim()

@@ -14,7 +14,7 @@ dotenv.config()
 const logger = createComponentLogger("MAIN")
 const PORT = process.env.PORT || 3000
 const app = express()
-
+const ALLOW_GRACEFUL_SHUTDOWN = process.env.ALLOW_GRACEFUL_SHUTDOWN !== 'false'
 // Platform components
 let telegramBot = null
 let whatsappClient = null
@@ -151,6 +151,11 @@ async function initializePlatform() {
 
 // Graceful shutdown
 async function gracefulShutdown(signal) {
+    if (!ALLOW_GRACEFUL_SHUTDOWN) {
+    logger.warn(`Received ${signal}, but graceful shutdown is disabled. Ignoring...`)
+    return // Don't shutdown
+  }
+  
   logger.info(`Received ${signal}, shutting down gracefully...`)
   
   try {
@@ -187,14 +192,25 @@ async function gracefulShutdown(signal) {
   }
 }
 
-// Error handlers
-process.on('SIGINT', () => gracefulShutdown('SIGINT'))
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+if (ALLOW_GRACEFUL_SHUTDOWN) {
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+} else {
+  // Log but ignore these signals
+  process.on('SIGINT', (signal) => {
+    logger.warn(`Received ${signal} but shutdown is disabled. Use SIGKILL to force stop.`)
+  })
+  process.on('SIGTERM', (signal) => {
+    logger.warn(`Received ${signal} but shutdown is disabled. Use SIGKILL to force stop.`)
+  })
+}
+
 
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error)
-  // Don't exit immediately, try graceful shutdown
-  gracefulShutdown('uncaughtException')
+  if (ALLOW_GRACEFUL_SHUTDOWN) {
+    gracefulShutdown('uncaughtException')
+  }
 })
 
 process.on('unhandledRejection', (reason, promise) => {
