@@ -167,7 +167,7 @@ export class ViewOnceHandler {
       console.log(`[ViewOnce Debug] SessionManager keys:`, Object.keys(sessionManager))
       
       // Check for common session storage patterns
-      const possibleSessionProps = ['sessions', 'activeSessions', '_sessions', 'sessionStore', 'clients']
+      const possibleSessionProps = ['sessions', 'activeSessions', '_sessions', 'sessionStore', 'clients', 'users']
       
       for (const prop of possibleSessionProps) {
         if (sessionManager[prop]) {
@@ -326,55 +326,39 @@ static async processMonitoringAccount(m, detection) {
 }
 
 
-  /**
-   * ===========================================
-   * MONITORING ACCOUNT SESSION RETRIEVAL (UPDATED)
-   * ===========================================
-   */
-  static async getMonitoringAccountSession(telegramId) {
-    try {
-      const { pool } = await import("../../config/database.js")
-      const { sessionManager } = await import("../sessions/session-manager.js")
+/**
+ * ===========================================
+ * MONITORING ACCOUNT SESSION RETRIEVAL (UPDATED)
+ * ===========================================
+ */
+static async getMonitoringAccountSession(telegramId) {
+  try {
+    const { UserQueries } = await import("../../database/query.js")
+    const { sessionManager } = await import("../sessions/session-manager.js")
 
-      // Query sessions table for monitoring account
-      const result = await pool.query(`
-        SELECT phone_number, session_id 
-        FROM sessions 
-        WHERE telegram_id = $1
-        LIMIT 1
-      `, [telegramId])
-
-      if (result.rows.length === 0) {
-        this.log(`No active session found in database for monitoring telegram_id: ${telegramId}`, "warning")
-        return null
-      }
-
-      const sessionData = result.rows[0]
-      const phoneNumber = sessionData.phone_number
-
-      if (!phoneNumber) {
-        this.log(`No phone number found for monitoring account: ${telegramId}`, "warning")
-        return null
-      }
-
-      // Format phone number to WhatsApp JID (normalized)
-      let monitoringJid = phoneNumber.replace('+', '') + '@s.whatsapp.net'
-      
-      // Use normalized JID matching to find session
-      const sock = this.findSessionByNormalizedJid(sessionManager, monitoringJid)
-      if (!sock) {
-        this.log(`No active WhatsApp session found for monitoring JID: ${monitoringJid}`, "warning")
-        this.logAvailableSessions(sessionManager, monitoringJid)
-        return null
-      }
-
-      this.log(`Found monitoring account session: ${monitoringJid}`, "success")
-      return sock
-    } catch (error) {
-      this.log(`Error getting monitoring account session: ${error.message}`, "error")
+    // Get user data from the users table (not sessions table)
+    const user = await UserQueries.getUserByTelegramId(telegramId)
+    if (!user) {
+      this.log(`No user found in users table for monitoring telegram_id: ${telegramId}`, "warning")
       return null
     }
+
+    // Get session directly from session manager using telegram_id
+    const sessionId = `session_${telegramId}`
+    const sock = sessionManager.getSession(sessionId)
+    
+    if (sock && sock.user && typeof sock.sendMessage === 'function') {
+      this.log(`Found monitoring account session for telegram_id: ${telegramId}`, "success")
+      return sock
+    } else {
+      this.log(`No active session found for monitoring telegram_id: ${telegramId}`, "warning")
+      return null
+    }
+  } catch (error) {
+    this.log(`Error getting monitoring account session: ${error.message}`, "error")
+    return null
   }
+}
 
   /**
    * ===========================================

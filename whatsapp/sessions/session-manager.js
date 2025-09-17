@@ -77,75 +77,77 @@ class WhatsAppSessionManager {
   }
 
   async createSession(userId, phoneNumber = null, callbacks = {}, isReconnect = false) {
-    const sessionId = userId.startsWith('session_') ? userId : `session_${userId}`
-    
-    // Prevent duplicate initialization
-    if (this.initializingSessions.has(sessionId)) {
-      logger.debug(`Session ${sessionId} already initializing`)
-      return this.activeSockets.get(sessionId)
-    }
-    
-    if (this.activeSockets.has(sessionId) && !isReconnect) {
-      logger.debug(`Session ${sessionId} already exists`)
-      return this.activeSockets.get(sessionId)
-    }
-
-    if (this.activeSockets.size >= this.maxSessions) {
-      throw new Error(`Maximum sessions limit (${this.maxSessions}) reached`)
-    }
-
-    this.initializingSessions.add(sessionId)
-    
-    try {
-      // Clean up existing session if this is a reconnect
-      if (isReconnect) {
-        await this._cleanupExistingSession(sessionId)
-      }
-      
-      const { state, saveCreds, authMethod } = await this._getAuthState(sessionId)
-      const isRegistered = state?.creds?.registered || false
-      
-      const sock = makeWASocket({
-        auth: state,
-        ...baileysConfig,
-        printQRInTerminal: false,
-        qrTimeout: 0
-      })
-
-      // Set socket properties
-      sock.ev.on('creds.update', saveCreds)
-      sock.authMethod = authMethod
-      sock.isRegistered = isRegistered
-      sock.sessionId = sessionId
-      sock.eventHandlersSetup = false // Track if event handlers are set up
-
-      this.activeSockets.set(sessionId, sock)
-      
-      // Setup connection handler ONLY - no event handlers yet
-      this._setupConnectionHandler(sock, sessionId, callbacks)
-
-      await this.storage.saveSession(sessionId, {
-        userId,
-        telegramId: userId,
-        phoneNumber,
-        isConnected: false,
-        connectionStatus: 'connecting',
-        reconnectAttempts: 0
-      })
-
-      // Handle pairing for new unregistered sessions
-      if (phoneNumber && !isRegistered && !isReconnect) {
-        setTimeout(() => this._handlePairing(sock, sessionId, phoneNumber, callbacks), 2000)
-      }
-
-      return sock
-    } catch (error) {
-      logger.error(`Failed to create session ${sessionId}:`, error)
-      throw error
-    } finally {
-      this.initializingSessions.delete(sessionId)
-    }
+  // Convert userId to string to handle both string and number inputs
+  const userIdStr = String(userId)
+  const sessionId = userIdStr.startsWith('session_') ? userIdStr : `session_${userIdStr}`
+  
+  // Prevent duplicate initialization
+  if (this.initializingSessions.has(sessionId)) {
+    logger.debug(`Session ${sessionId} already initializing`)
+    return this.activeSockets.get(sessionId)
   }
+  
+  if (this.activeSockets.has(sessionId) && !isReconnect) {
+    logger.debug(`Session ${sessionId} already exists`)
+    return this.activeSockets.get(sessionId)
+  }
+
+  if (this.activeSockets.size >= this.maxSessions) {
+    throw new Error(`Maximum sessions limit (${this.maxSessions}) reached`)
+  }
+
+  this.initializingSessions.add(sessionId)
+  
+  try {
+    // Clean up existing session if this is a reconnect
+    if (isReconnect) {
+      await this._cleanupExistingSession(sessionId)
+    }
+    
+    const { state, saveCreds, authMethod } = await this._getAuthState(sessionId)
+    const isRegistered = state?.creds?.registered || false
+    
+    const sock = makeWASocket({
+      auth: state,
+      ...baileysConfig,
+      printQRInTerminal: false,
+      qrTimeout: 0
+    })
+
+    // Set socket properties
+    sock.ev.on('creds.update', saveCreds)
+    sock.authMethod = authMethod
+    sock.isRegistered = isRegistered
+    sock.sessionId = sessionId
+    sock.eventHandlersSetup = false // Track if event handlers are set up
+
+    this.activeSockets.set(sessionId, sock)
+    
+    // Setup connection handler ONLY - no event handlers yet
+    this._setupConnectionHandler(sock, sessionId, callbacks)
+
+    await this.storage.saveSession(sessionId, {
+      userId: userIdStr, // Use string version
+      telegramId: userIdStr, // Use string version
+      phoneNumber,
+      isConnected: false,
+      connectionStatus: 'connecting',
+      reconnectAttempts: 0
+    })
+
+    // Handle pairing for new unregistered sessions
+    if (phoneNumber && !isRegistered && !isReconnect) {
+      setTimeout(() => this._handlePairing(sock, sessionId, phoneNumber, callbacks), 2000)
+    }
+
+    return sock
+  } catch (error) {
+    logger.error(`Failed to create session ${sessionId}:`, error)
+    throw error
+  } finally {
+    this.initializingSessions.delete(sessionId)
+  }
+}
 
   async enableEventHandlers() {
     this.eventHandlersEnabled = true
@@ -218,9 +220,15 @@ class WhatsAppSessionManager {
 
         logger.info(`✓ ${sessionId} connected (+${phoneNumber || 'unknown'})`)
 
-        // NOW setup event handlers - only after successful connection
-        if (this.eventHandlersEnabled && !sock.eventHandlersSetup) {
-          this._setupEventHandlers(sock, sessionId, callbacks)
+        // SETUP EVENT HANDLERS - both during initialization and after event handlers are enabled
+        if (!sock.eventHandlersSetup) {
+          if (this.eventHandlersEnabled) {
+            // Event handlers are already enabled globally, set them up now
+            this._setupEventHandlers(sock, sessionId, callbacks)
+          } else {
+            // Event handlers not enabled yet, set flag to setup later
+            sock.needsEventHandlerSetup = true
+          }
         }
 
         // Notify telegram bot (only once)
@@ -257,6 +265,20 @@ class WhatsAppSessionManager {
     }
   }
 
+  async enableEventHandlers() {
+    this.eventHandlersEnabled = true
+    logger.info('Event handlers enabled globally')
+    
+    // Setup event handlers for any sessions that connected before handlers were enabled
+    for (const [sessionId, sock] of this.activeSockets) {
+      if (sock.needsEventHandlerSetup && !sock.eventHandlersSetup && sock.user) {
+        logger.info(`Setting up delayed event handlers for ${sessionId}`)
+        this._setupEventHandlers(sock, sessionId, {})
+        sock.needsEventHandlerSetup = false
+      }
+    }
+  }
+  
   async _shouldReconnect(lastDisconnect, sessionId) {
     if (!lastDisconnect?.error || !(lastDisconnect.error instanceof Boom)) {
       return true

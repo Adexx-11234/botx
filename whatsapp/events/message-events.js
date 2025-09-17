@@ -94,6 +94,7 @@ export class MessageEventHandler {
     })
 
     // messages.delete - Direct processing
+    // messages.delete - Direct processing
     sock.ev.on("messages.delete", async (deletions) => {
       const currentSock = weakSock.deref()
       const currentMainHandler = weakMainHandler.deref()
@@ -101,10 +102,13 @@ export class MessageEventHandler {
       
       currentMainHandler.trackEvent("messages.delete")
       
+      // Ensure deletions is always an array
+      const deletionArray = Array.isArray(deletions) ? deletions : [deletions]
+      
       // Direct processing without accumulation
-      for (const deletion of deletions) {
+      for (const deletion of deletionArray) {
         try {
-          if (deletion.key.participant?.endsWith('@lid')) {
+          if (deletion.key && deletion.key.participant?.endsWith('@lid')) {
             const resolved = await currentMainHandler.resolveLidToActualJid(
               currentSock, 
               deletion.key.remoteJid, 

@@ -27,25 +27,10 @@ export class MessageProcessor {
       if (!pluginLoader.isInitialized) {
         await pluginLoader.loadPlugins()
       }
-      await this.initializeExistingSessions()
       this.isInitialized = true
     }
   }
 
-  async initializeExistingSessions() {
-    try {
-      const { sessionManager } = await import("../sessions/session-manager.js")
-      const result = await sessionManager.initializeExistingSessions({
-        onConnected: (sock) => logger.info(`[MessageProcessor] Session reconnected: ${sock.user?.id}`),
-        onError: (error) => logger.error(`[MessageProcessor] Session error: ${error.message}`)
-      })
-      if (result.initialized > 0) {
-        logger.info(`[MessageProcessor] Restored ${result.initialized} sessions`)
-      }
-    } catch (error) {
-      logger.error(`[MessageProcessor] Failed to initialize sessions: ${error.message}`)
-    }
-  }
 
  async processMessage(sock, sessionId, m, prefix) {
   try {
