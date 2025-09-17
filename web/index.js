@@ -73,78 +73,78 @@ export class WebInterface {
 
   // Database operations
   async createUser(userData) {
-    try {
-      const { pool } = await import('../config/database.js')
-      const hashedPassword = await bcrypt.hash(userData.password, 12)
-      
-      // Generate a unique negative telegram_id for web users to distinguish from real Telegram users
-      const webTelegramId = -Math.floor(Math.random() * 1000000000) - 1000000000
-      
-      const result = await pool.query(`
-        INSERT INTO users (telegram_id, first_name, phone_number, username, is_active, created_at)
-        VALUES ($1, $2, $3, $4, true, NOW())
-        RETURNING id, telegram_id, first_name, phone_number, username, created_at
-      `, [webTelegramId, userData.name, userData.phoneNumber, `web_${userData.name.toLowerCase().replace(/\s+/g, '_')}`, ])
-      
-      // Store password separately in a web_users_auth table since main users table doesn't have password field
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS web_users_auth (
-          user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-          password_hash VARCHAR(255) NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `)
-      
-      await pool.query(`
-        INSERT INTO web_users_auth (user_id, password_hash) VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET password_hash = $2, updated_at = NOW()
-      `, [result.rows[0].id, hashedPassword])
-      
-      return result.rows[0]
-    } catch (error) {
-      logger.error('Create user error:', error)
-      if (error.code === '23505') { // Unique constraint violation
-        throw new Error('Phone number already registered')
-      }
-      throw new Error('Registration failed')
+  try {
+    const { pool } = await import('../config/database.js')
+    const hashedPassword = await bcrypt.hash(userData.password, 12)
+    
+    // Generate a unique positive telegram_id for web users (9 billion range)
+    const webTelegramId = Math.floor(Math.random() * 1000000000) + 9000000000
+    
+    const result = await pool.query(`
+      INSERT INTO users (telegram_id, first_name, phone_number, username, is_active, created_at)
+      VALUES ($1, $2, $3, $4, true, NOW())
+      RETURNING id, telegram_id, first_name, phone_number, username, created_at
+    `, [webTelegramId, userData.name, userData.phoneNumber, `web_${userData.name.toLowerCase().replace(/\s+/g, '_')}`])
+    
+    // Store password separately in a web_users_auth table since main users table doesn't have password field
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS web_users_auth (
+        user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    
+    await pool.query(`
+      INSERT INTO web_users_auth (user_id, password_hash) VALUES ($1, $2)
+      ON CONFLICT (user_id) DO UPDATE SET password_hash = $2, updated_at = NOW()
+    `, [result.rows[0].id, hashedPassword])
+    
+    return result.rows[0]
+  } catch (error) {
+    logger.error('Create user error:', error)
+    if (error.code === '23505') { // Unique constraint violation
+      throw new Error('Phone number already registered')
     }
+    throw new Error('Registration failed')
   }
+}
 
-  async getUserByPhone(phoneNumber) {
-    try {
-      const { pool } = await import('../config/database.js')
-      const result = await pool.query(`
-        SELECT u.id, u.telegram_id, u.first_name as name, u.phone_number, 
-               u.username, u.created_at, u.updated_at, w.password_hash
-        FROM users u
-        LEFT JOIN web_users_auth w ON u.id = w.user_id
-        WHERE u.phone_number = $1 AND u.telegram_id < 0
-      `, [phoneNumber])
-      
-      return result.rows[0] || null
-    } catch (error) {
-      logger.error('Get user by phone error:', error)
-      return null
-    }
+ async getUserByPhone(phoneNumber) {
+  try {
+    const { pool } = await import('../config/database.js')
+    const result = await pool.query(`
+      SELECT u.id, u.telegram_id, u.first_name as name, u.phone_number, 
+             u.username, u.created_at, u.updated_at, w.password_hash
+      FROM users u
+      LEFT JOIN web_users_auth w ON u.id = w.user_id
+      WHERE u.phone_number = $1 AND u.telegram_id > 9000000000
+    `, [phoneNumber])
+    
+    return result.rows[0] || null
+  } catch (error) {
+    logger.error('Get user by phone error:', error)
+    return null
   }
+}
 
   async getUserById(userId) {
-    try {
-      const { pool } = await import('../config/database.js')
-      const result = await pool.query(`
-        SELECT u.id, u.telegram_id, u.first_name as name, u.phone_number, 
-               u.username, u.created_at, u.updated_at
-        FROM users u
-        WHERE u.id = $1 AND u.telegram_id < 0
-      `, [userId])
-      
-      return result.rows[0] || null
-    } catch (error) {
-      logger.error('Get user by ID error:', error)
-      return null
-    }
+  try {
+    const { pool } = await import('../config/database.js')
+    const result = await pool.query(`
+      SELECT u.id, u.telegram_id, u.first_name as name, u.phone_number, 
+             u.username, u.created_at, u.updated_at
+      FROM users u
+      WHERE u.id = $1 AND u.telegram_id > 9000000000
+    `, [userId])
+    
+    return result.rows[0] || null
+  } catch (error) {
+    logger.error('Get user by ID error:', error)
+    return null
   }
+}
 
   // Route handlers
   renderHomePage(req, res) {
@@ -160,21 +160,21 @@ export class WebInterface {
   }
 
   async renderDashboard(req, res) {
-    try {
-      const sessionId = `session_web_${req.user.id}`
-      const isConnected = await this.sessionManager.isReallyConnected(sessionId)
-      const session = await this.storage.getSession(sessionId)
-      
-      res.send(this.getHTML('dashboard', {
-        user: req.user,
-        isConnected,
-        session
-      }))
-    } catch (error) {
-      logger.error('Dashboard render error:', error)
-      res.status(500).send('Server error')
-    }
+  try {
+    const sessionId = `session_${req.user.telegram_id}` // Changed from session_web_${req.user.id}
+    const isConnected = await this.sessionManager.isReallyConnected(sessionId)
+    const session = await this.storage.getSession(sessionId)
+    
+    res.send(this.getHTML('dashboard', {
+      user: req.user,
+      isConnected,
+      session
+    }))
+  } catch (error) {
+    logger.error('Dashboard render error:', error)
+    res.status(500).send('Server error')
   }
+}
 
   renderConnectPage(req, res) {
     res.send(this.getHTML('connect', { user: req.user }))
@@ -289,92 +289,95 @@ export class WebInterface {
   }
 
   async handleConnect(req, res) {
-    try {
-      const { phoneNumber } = req.body
-      const userId = req.user.id
-      
-      if (!phoneNumber) {
-        return res.status(400).json({ error: 'Phone number is required' })
-      }
-
-      const phoneValidation = validatePhone(phoneNumber)
-      if (!phoneValidation.isValid) {
-        return res.status(400).json({ error: 'Invalid phone number format' })
-      }
-
-      const sessionId = `session_web_${userId}`
-      
-      // Check if already connected
-      const isConnected = await this.sessionManager.isReallyConnected(sessionId)
-      if (isConnected) {
-        return res.status(400).json({ error: 'Already connected to WhatsApp' })
-      }
-
-      // Check if phone is in use by another session
-      const existingSession = await this.storage.getSessionByPhone?.(phoneValidation.formatted)
-      if (existingSession && existingSession.sessionId !== sessionId) {
-        return res.status(400).json({ error: 'This phone number is already in use' })
-      }
-
-      // Clean up any stale data
-      await this.sessionManager.performCompleteUserCleanup(sessionId)
-
-      // Generate pairing code
-      const result = await this.generatePairingCode(userId, phoneValidation.formatted)
-      
-      if (result.success) {
-        // Store pending connection
-        this.pendingConnections.set(sessionId, {
-          userId,
-          phoneNumber: phoneValidation.formatted,
-          code: result.code,
-          timestamp: Date.now()
-        })
-
-        // Auto cleanup after 2 minutes
-        setTimeout(() => {
-          if (this.pendingConnections.get(sessionId)?.code === result.code) {
-            this.pendingConnections.delete(sessionId)
-          }
-        }, 120000)
-
-        res.json({
-          success: true,
-          sessionId,
-          code: result.code,
-          phoneNumber: phoneValidation.formatted
-        })
-      } else {
-        res.status(500).json({ error: result.error || 'Failed to generate pairing code' })
-      }
-
-    } catch (error) {
-      logger.error('Connect error:', error)
-      res.status(500).json({ error: 'Connection failed' })
-    }
-  }
-
-  async generatePairingCode(userId, phoneNumber) {
   try {
-    const sessionId = `session_web_${userId}`
+    const { phoneNumber } = req.body
+    const userId = req.user.id
+    const telegramId = req.user.telegram_id
     
-    logger.info(`Generating pairing code for ${phoneNumber} (web user: ${userId})`)
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' })
+    }
+
+    const phoneValidation = validatePhone(phoneNumber)
+    if (!phoneValidation.isValid) {
+      return res.status(400).json({ error: 'Invalid phone number format' })
+    }
+
+    const sessionId = `session_${telegramId}`
+    
+    // Check if already connected
+    const isConnected = await this.sessionManager.isReallyConnected(sessionId)
+    if (isConnected) {
+      return res.status(400).json({ error: 'Already connected to WhatsApp' })
+    }
+
+    // Check if phone is in use by another session
+    const existingSession = await this.storage.getSessionByPhone?.(phoneValidation.formatted)
+    if (existingSession && existingSession.sessionId !== sessionId) {
+      return res.status(400).json({ error: 'This phone number is already in use' })
+    }
+
+    // Clean up any stale data
+    await this.sessionManager.performCompleteUserCleanup(sessionId)
+
+    // Generate pairing code using telegram_id
+    const result = await this.generatePairingCode(telegramId, phoneValidation.formatted)
+    
+    if (result.success) {
+      // Store pending connection
+      this.pendingConnections.set(sessionId, {
+        userId,
+        telegramId,
+        phoneNumber: phoneValidation.formatted,
+        code: result.code,
+        timestamp: Date.now()
+      })
+
+      // Auto cleanup after 2 minutes
+      setTimeout(() => {
+        if (this.pendingConnections.get(sessionId)?.code === result.code) {
+          this.pendingConnections.delete(sessionId)
+        }
+      }, 120000)
+
+      res.json({
+        success: true,
+        sessionId,
+        code: result.code,
+        phoneNumber: phoneValidation.formatted
+      })
+    } else {
+      res.status(500).json({ error: result.error || 'Failed to generate pairing code' })
+    }
+
+  } catch (error) {
+    logger.error('Connect error:', error)
+    res.status(500).json({ error: 'Connection failed' })
+  }
+}
+
+
+  async generatePairingCode(telegramId, phoneNumber) {
+  try {
+    const sessionId = `session_${telegramId}`
+    
+    logger.info(`Generating pairing code for ${phoneNumber} (telegram_id: ${telegramId})`)
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Code generation timeout'))
       }, 45000)
 
-      // Use the user ID directly for web sessions
-      this.sessionManager.createSession(sessionId, phoneNumber, {
+      // Use telegram_id directly
+      this.sessionManager.createSession(telegramId, phoneNumber, {
         onPairingCode: (code) => {
           clearTimeout(timeout)
-          logger.info(`Pairing code generated for web user ${userId}: ${code}`)
+          logger.info(`Pairing code generated for telegram_id ${telegramId}: ${code}`)
           resolve({ success: true, code })
         },
         
         onConnected: async (sock) => {
-          logger.info(`WhatsApp connection successful for web user ${userId}: ${phoneNumber}`)
+          logger.info(`WhatsApp connection successful for telegram_id ${telegramId}: ${phoneNumber}`)
           this.pendingConnections.delete(sessionId)
         },
         
@@ -397,71 +400,72 @@ export class WebInterface {
 }
 
   async handleDisconnect(req, res) {
-    try {
-      const userId = req.user.id
-      const sessionId = `session_web_${userId}`
-      
-      const session = await this.storage.getSession(sessionId)
-      if (!session || !session.isConnected) {
-        return res.status(400).json({ error: 'Not connected to WhatsApp' })
-      }
-
-      await this.sessionManager.performCompleteUserCleanup(sessionId)
-      
-      res.json({ 
-        success: true, 
-        message: 'Disconnected successfully' 
-      })
-
-    } catch (error) {
-      logger.error('Disconnect error:', error)
-      res.status(500).json({ error: 'Disconnect failed' })
+  try {
+    const telegramId = req.user.telegram_id
+    const sessionId = `session_${telegramId}`
+    
+    const session = await this.storage.getSession(sessionId)
+    if (!session || !session.isConnected) {
+      return res.status(400).json({ error: 'Not connected to WhatsApp' })
     }
-  }
 
-  async handleStatus(req, res) {
-    try {
-      const userId = req.user.id
-      const sessionId = `session_web_${userId}`
-      
-      const isConnected = await this.sessionManager.isReallyConnected(sessionId)
-      const session = await this.storage.getSession(sessionId)
-      
-      res.json({
-        isConnected,
-        phoneNumber: session?.phoneNumber || null,
-        connectionStatus: session?.connectionStatus || 'disconnected',
-        sessionId
-      })
+    await this.sessionManager.performCompleteUserCleanup(sessionId)
+    
+    res.json({ 
+      success: true, 
+      message: 'Disconnected successfully' 
+    })
 
-    } catch (error) {
-      logger.error('Status check error:', error)
-      res.status(500).json({ error: 'Status check failed' })
-    }
+  } catch (error) {
+    logger.error('Disconnect error:', error)
+    res.status(500).json({ error: 'Disconnect failed' })
   }
+}
+
+async handleStatus(req, res) {
+  try {
+    const telegramId = req.user.telegram_id
+    const sessionId = `session_${telegramId}`
+    
+    const isConnected = await this.sessionManager.isReallyConnected(sessionId)
+    const session = await this.storage.getSession(sessionId)
+    
+    res.json({
+      isConnected,
+      phoneNumber: session?.phoneNumber || null,
+      connectionStatus: session?.connectionStatus || 'disconnected',
+      sessionId
+    })
+
+  } catch (error) {
+    logger.error('Status check error:', error)
+    res.status(500).json({ error: 'Status check failed' })
+  }
+}
 
   async checkConnectionStatus(req, res) {
-    try {
-      const { sessionId } = req.params
-      
-      if (!sessionId.startsWith('session_web_')) {
-        return res.status(400).json({ error: 'Invalid session ID' })
-      }
-
-      const isConnected = await this.sessionManager.isReallyConnected(sessionId)
-      const session = await this.storage.getSession(sessionId)
-      
-      res.json({
-        isConnected,
-        phoneNumber: session?.phoneNumber || null,
-        connectionStatus: session?.connectionStatus || 'disconnected'
-      })
-
-    } catch (error) {
-      logger.error('Connection status check error:', error)
-      res.status(500).json({ error: 'Status check failed' })
+  try {
+    const { sessionId } = req.params
+    
+    // Remove the session_web_ check since we're now using session_${telegramId}
+    if (!sessionId.startsWith('session_')) {
+      return res.status(400).json({ error: 'Invalid session ID' })
     }
+
+    const isConnected = await this.sessionManager.isReallyConnected(sessionId)
+    const session = await this.storage.getSession(sessionId)
+    
+    res.json({
+      isConnected,
+      phoneNumber: session?.phoneNumber || null,
+      connectionStatus: session?.connectionStatus || 'disconnected'
+    })
+
+  } catch (error) {
+    logger.error('Connection status check error:', error)
+    res.status(500).json({ error: 'Status check failed' })
   }
+}
 
   // HTML templates
   getHTML(page, data = {}) {
