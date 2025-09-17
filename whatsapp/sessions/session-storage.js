@@ -29,7 +29,7 @@ export class SessionStorage {
   async _initMongoDB() {
     try {
       const mongoUrl = process.env.MONGODB_URI || 
-        'mongodb+srv://rosegrace7abc_db_user:tqkwHneyl7pATC5N@cluster0.46lnk77.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'
+        'mongodb+srv://Paul112210:qahmr6jy2b4uzBMf@main.uwa6va6.mongodb.net/?retryWrites=true&w=majority&appName=Main'
       
       const connectionOptions = {
         maxPoolSize: 8,
